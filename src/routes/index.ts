@@ -47,32 +47,32 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   app.get("/auth/spotify/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`Spotify authorization failed: ${query.error}`, 400);
+      throw new AppError(`Spotify 인증에 실패했습니다: ${query.error}`, 400);
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("Spotify callback is missing code or state");
+      throw new ValidationError("Spotify 콜백에 code 또는 state가 없습니다");
     }
 
     await context.oauthService.handleSpotifyCallback(query.code, query.state);
-    return reply.redirect("/?message=Spotify account connected");
+    return reply.redirect("/?message=Spotify 계정이 연결되었습니다");
   });
 
   app.get("/auth/youtube/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`YouTube authorization failed: ${query.error}`, 400);
+      throw new AppError(`YouTube 인증에 실패했습니다: ${query.error}`, 400);
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("YouTube callback is missing code or state");
+      throw new ValidationError("YouTube 콜백에 code 또는 state가 없습니다");
     }
 
     await context.oauthService.handleYouTubeCallback(query.code, query.state);
-    return reply.redirect("/?message=YouTube account connected");
+    return reply.redirect("/?message=YouTube 계정이 연결되었습니다");
   });
 
   app.post("/admin/sync", { onRequest: basicAuthGuard }, async (_request, reply) => {
     await context.syncService.run("manual");
-    return reply.redirect("/?message=Sync completed");
+    return reply.redirect("/?message=동기화가 완료되었습니다");
   });
 
   app.post(
@@ -84,16 +84,16 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
       const videoId = extractYouTubeVideoId(body.videoInput ?? "");
 
       if (!videoId) {
-        throw new ValidationError("Please provide a valid YouTube video URL or video ID");
+        throw new ValidationError("올바른 YouTube URL 또는 video ID를 입력해주세요");
       }
 
       const track = context.store.getTrackBySpotifyId(params.spotifyTrackId);
       if (!track) {
-        throw new AppError("Track not found", 404);
+        throw new AppError("곡을 찾을 수 없습니다", 404);
       }
 
       context.store.setManualVideoId(params.spotifyTrackId, videoId);
-      return reply.redirect("/?message=Manual override saved");
+      return reply.redirect("/?message=수동 지정이 저장되었습니다");
     },
   );
 

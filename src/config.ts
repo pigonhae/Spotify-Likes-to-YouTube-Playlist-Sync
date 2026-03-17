@@ -21,7 +21,15 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   YOUTUBE_API_KEY: z.string().min(1),
   SYNC_TRIGGER_SECRET: z.string().min(24),
-  YOUTUBE_PLAYLIST_ID: z.string().min(1).optional(),
+  YOUTUBE_PLAYLIST_ID: z.preprocess(
+    (value) => {
+      if (typeof value === "string" && value.trim() === "") {
+        return undefined;
+      }
+      return value;
+    },
+    z.string().min(1).optional(),
+  ),
   YOUTUBE_PLAYLIST_TITLE: z.string().min(1).default("Spotify Likes Sync"),
   YOUTUBE_PLAYLIST_DESCRIPTION: z
     .string()
