@@ -63,7 +63,8 @@ The list below reflects features confirmed in the current source code and tests.
 
 ## Demo / Screenshots
 
-! [Screenshots](https://cdn.discordapp.com/attachments/744492784819372103/1483525621630894312/image.png?ex=69bae866&is=69b996e6&hm=b55d15f2ebfccd5ec4de8f08cc5b7b9124e7c96d56f3c517e19a0f96b01cbca8&)
+<img width="1849" height="951" alt="image" src="https://github.com/user-attachments/assets/31a07bce-ea88-4063-b724-9fdb38ff8fb7" />
+
 
 ## Tech Stack
 
