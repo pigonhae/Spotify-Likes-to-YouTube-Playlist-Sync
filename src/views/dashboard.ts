@@ -3,7 +3,7 @@ import type { SyncStats } from "../types.js";
 
 type MessageLevel = "success" | "error";
 
-type DashboardSummary = ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>;
+type DashboardSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>>;
 type DashboardRun = DashboardSummary["recentRuns"][number];
 
 export function renderDashboard(input: {
@@ -390,7 +390,7 @@ export function renderDashboard(input: {
           ${
             input.summary.recentRuns.length === 0
               ? `<p class="run-empty">아직 동기화 실행 내역이 없습니다.</p>`
-              : input.summary.recentRuns.map((run) => renderRunCard(run)).join("")
+              : input.summary.recentRuns.map((run: DashboardRun) => renderRunCard(run)).join("")
           }
         </div>
       </section>
@@ -406,7 +406,7 @@ export function renderDashboard(input: {
                 ? `<tr><td colspan="4">지금은 수동 확인이 필요한 곡이 없습니다.</td></tr>`
                 : input.summary.attentionTracks
                     .map(
-                      (track) => `<tr>
+                      (track: DashboardSummary["attentionTracks"][number]) => `<tr>
                         <td>
                           <strong>${escapeHtml(track.trackName)}</strong><br />
                           <small>${escapeHtml(track.artistNames.join(", "))}${track.albumName ? ` / ${escapeHtml(track.albumName)}` : ""}</small>
@@ -571,9 +571,16 @@ function formatTrackStatus(status: string) {
   }
 }
 
-function safeParseJson(raw: string | null | undefined) {
+function safeParseJson(raw: unknown) {
   if (!raw) {
     return { value: null, parsed: false };
+  }
+
+  if (typeof raw !== "string") {
+    return {
+      value: raw,
+      parsed: true,
+    };
   }
 
   try {

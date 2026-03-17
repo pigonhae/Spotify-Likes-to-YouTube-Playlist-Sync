@@ -40,12 +40,16 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     const query = request.query as Record<string, unknown>;
     const message = typeof query.message === "string" ? query.message : undefined;
     const messageLevel: FlashLevel = query.level === "error" ? "error" : "success";
+    const [summary, accounts] = await Promise.all([
+      context.store.getDashboardSummary(),
+      context.store.listOAuthAccounts(),
+    ]);
 
     const html = renderDashboard({
       ...(message ? { message } : {}),
       ...(message ? { messageLevel } : {}),
-      summary: context.store.getDashboardSummary(),
-      accounts: context.store.listOAuthAccounts().map((account) => ({
+      summary,
+      accounts: accounts.map((account: any) => ({
         provider: account.provider,
         externalDisplayName: account.externalDisplayName,
         invalidatedAt: account.invalidatedAt,
@@ -57,12 +61,12 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   });
 
   app.get("/auth/spotify/start", { onRequest: basicAuthGuard }, async (_request, reply) => {
-    const url = context.oauthService.createAuthorizationUrl("spotify");
+    const url = await context.oauthService.createAuthorizationUrl("spotify");
     return reply.redirect(url);
   });
 
   app.get("/auth/youtube/start", { onRequest: basicAuthGuard }, async (_request, reply) => {
-    const url = context.oauthService.createAuthorizationUrl("youtube");
+    const url = await context.oauthService.createAuthorizationUrl("youtube");
     return reply.redirect(url);
   });
 
@@ -144,7 +148,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     async (request, reply) =>
       handleDashboardAction(
         reply,
-        () => {
+        async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
           const videoId = extractYouTubeVideoId(body.videoInput ?? "");
@@ -153,12 +157,12 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
             throw new ValidationError("올바른 YouTube URL 또는 video ID를 입력해 주세요.");
           }
 
-          const track = context.store.getTrackBySpotifyId(params.spotifyTrackId);
+          const track = await context.store.getTrackBySpotifyId(params.spotifyTrackId);
           if (!track) {
             throw new AppError("곡을 찾을 수 없습니다.", 404);
           }
 
-          context.store.setManualVideoId(params.spotifyTrackId, videoId);
+          await context.store.setManualVideoId(params.spotifyTrackId, videoId);
         },
         () => "수동 지정을 저장했습니다.",
       ),

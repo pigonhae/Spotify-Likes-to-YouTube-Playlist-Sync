@@ -120,6 +120,7 @@ describe("renderDashboard", () => {
         recentRuns: [
           {
             id: 1,
+            userId: "test-owner",
             trigger: "manual",
             status: "quota_exhausted",
             startedAt: Date.parse("2026-03-17T00:00:00.000Z"),
@@ -166,6 +167,7 @@ describe("renderDashboard", () => {
         recentRuns: [
           {
             id: 2,
+            userId: "test-owner",
             trigger: "schedule",
             status: "failed",
             startedAt: Date.parse("2026-03-17T01:00:00.000Z"),

@@ -10,69 +10,127 @@ import {
   playlistVideos,
   syncLock,
   syncRuns,
+  syncState,
   trackMappings,
+  users,
 } from "./schema.js";
 import type { AppDatabase } from "./client.js";
 
 const PLAYLIST_SETTING_KEY = "youtube.playlistId";
 
+export async function createAppStore(
+  database: AppDatabase,
+  userKey: string,
+  displayName = "Owner",
+) {
+  const now = Date.now();
+
+  await database.db
+    .insert(users)
+    .values({
+      id: randomUUID(),
+      userKey,
+      displayName,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: users.userKey });
+
+  const user =
+    (await database.db.select().from(users).where(eq(users.userKey, userKey)).limit(1))[0] ?? null;
+
+  if (!user) {
+    throw new Error(`Failed to initialize owner user for key: ${userKey}`);
+  }
+
+  return new AppStore(database, user.id);
+}
+
 export class AppStore {
-  constructor(private readonly database: AppDatabase) {}
+  constructor(
+    private readonly database: AppDatabase,
+    private readonly userId: string,
+  ) {}
 
   get db() {
     return this.database.db;
   }
 
-  cleanupExpiredStates(now = Date.now()) {
-    this.db.delete(oauthStates).where(lt(oauthStates.expiresAt, now)).run();
+  async cleanupExpiredStates(now = Date.now()) {
+    await this.db
+      .delete(oauthStates)
+      .where(and(eq(oauthStates.userId, this.userId), lt(oauthStates.expiresAt, now)));
   }
 
-  createOAuthState(provider: Provider, ttlMs = 10 * 60 * 1000) {
+  async createOAuthState(provider: Provider, ttlMs = 10 * 60 * 1000) {
     const now = Date.now();
     const state = randomUUID();
-    this.db
-      .insert(oauthStates)
-      .values({
-        state,
-        provider,
-        createdAt: now,
-        expiresAt: now + ttlMs,
-      })
-      .run();
+    await this.db.insert(oauthStates).values({
+      state,
+      userId: this.userId,
+      provider,
+      createdAt: now,
+      expiresAt: now + ttlMs,
+    });
     return state;
   }
 
-  consumeOAuthState(provider: Provider, state: string) {
+  async consumeOAuthState(provider: Provider, state: string) {
     const now = Date.now();
     const row =
-      this.db
-        .select()
-        .from(oauthStates)
-        .where(and(eq(oauthStates.provider, provider), eq(oauthStates.state, state)))
-        .get() ?? null;
+      (
+        await this.db
+          .select()
+          .from(oauthStates)
+          .where(
+            and(
+              eq(oauthStates.userId, this.userId),
+              eq(oauthStates.provider, provider),
+              eq(oauthStates.state, state),
+            ),
+          )
+          .limit(1)
+      )[0] ?? null;
 
     if (!row || row.expiresAt < now) {
       if (row) {
-        this.db.delete(oauthStates).where(eq(oauthStates.state, state)).run();
+        await this.db
+          .delete(oauthStates)
+          .where(
+            and(eq(oauthStates.userId, this.userId), eq(oauthStates.state, state)),
+          );
       }
       return false;
     }
 
-    this.db.delete(oauthStates).where(eq(oauthStates.state, state)).run();
+    await this.db
+      .delete(oauthStates)
+      .where(and(eq(oauthStates.userId, this.userId), eq(oauthStates.state, state)));
     return true;
   }
 
-  getOAuthAccount(provider: Provider) {
+  async getOAuthAccount(provider: Provider) {
     return (
-      this.db.select().from(oauthAccounts).where(eq(oauthAccounts.provider, provider)).get() ?? null
+      (
+        await this.db
+          .select()
+          .from(oauthAccounts)
+          .where(
+            and(eq(oauthAccounts.userId, this.userId), eq(oauthAccounts.provider, provider)),
+          )
+          .limit(1)
+      )[0] ?? null
     );
   }
 
-  listOAuthAccounts() {
-    return this.db.select().from(oauthAccounts).all();
+  async listOAuthAccounts() {
+    return this.db
+      .select()
+      .from(oauthAccounts)
+      .where(eq(oauthAccounts.userId, this.userId));
   }
 
-  upsertOAuthAccount(input: {
+  async upsertOAuthAccount(input: {
     provider: Provider;
     encryptedAccessToken: string;
     encryptedRefreshToken: string | null;
@@ -84,16 +142,18 @@ export class AppStore {
     lastRefreshError?: string | null;
   }) {
     const now = Date.now();
-    this.db
+    await this.db
       .insert(oauthAccounts)
       .values({
+        id: randomUUID(),
+        userId: this.userId,
         ...input,
         connectedAt: now,
         createdAt: now,
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: oauthAccounts.provider,
+        target: [oauthAccounts.userId, oauthAccounts.provider],
         set: {
           encryptedAccessToken: input.encryptedAccessToken,
           encryptedRefreshToken: input.encryptedRefreshToken,
@@ -106,87 +166,119 @@ export class AppStore {
           lastRefreshError: input.lastRefreshError ?? null,
           updatedAt: now,
         },
-      })
-      .run();
+      });
   }
 
-  markOAuthAccountInvalid(provider: Provider, message: string) {
-    this.db
+  async markOAuthAccountInvalid(provider: Provider, message: string) {
+    await this.db
       .update(oauthAccounts)
       .set({
         invalidatedAt: Date.now(),
         lastRefreshError: message,
         updatedAt: Date.now(),
       })
-      .where(eq(oauthAccounts.provider, provider))
-      .run();
+      .where(and(eq(oauthAccounts.userId, this.userId), eq(oauthAccounts.provider, provider)));
   }
 
-  saveSetting(key: string, value: string) {
+  async saveSetting(key: string, settingValue: string) {
     const now = Date.now();
-    this.db
+    await this.db
       .insert(appSettings)
-      .values({ key, value, updatedAt: now })
-      .onConflictDoUpdate({
-        target: appSettings.key,
-        set: { value, updatedAt: now },
+      .values({
+        id: randomUUID(),
+        userId: this.userId,
+        key,
+        settingValue,
+        updatedAt: now,
       })
-      .run();
+      .onConflictDoUpdate({
+        target: [appSettings.userId, appSettings.key],
+        set: { settingValue, updatedAt: now },
+      });
   }
 
-  getSetting(key: string) {
-    return this.db.select().from(appSettings).where(eq(appSettings.key, key)).get() ?? null;
+  async getSetting(key: string) {
+    return (
+      (
+        await this.db
+          .select()
+          .from(appSettings)
+          .where(and(eq(appSettings.userId, this.userId), eq(appSettings.key, key)))
+          .limit(1)
+      )[0] ?? null
+    );
   }
 
-  saveManagedPlaylistId(playlistId: string) {
-    this.saveSetting(PLAYLIST_SETTING_KEY, playlistId);
+  async saveManagedPlaylistId(playlistId: string) {
+    await this.saveSetting(PLAYLIST_SETTING_KEY, playlistId);
   }
 
-  getManagedPlaylistId() {
-    return this.getSetting(PLAYLIST_SETTING_KEY)?.value ?? null;
+  async getManagedPlaylistId() {
+    return (await this.getSetting(PLAYLIST_SETTING_KEY))?.settingValue ?? null;
   }
 
-  disconnectSpotifyState() {
-    return this.database.sqlite.transaction(() => {
-      const deletedAccounts = Number(
-        this.db.delete(oauthAccounts).where(eq(oauthAccounts.provider, "spotify")).run().changes ?? 0,
-      );
-      const deletedStates = Number(
-        this.db.delete(oauthStates).where(eq(oauthStates.provider, "spotify")).run().changes ?? 0,
-      );
+  async disconnectSpotifyState() {
+    return this.db.transaction(async (tx: any) => {
+      const deletedAccounts = (
+        await tx
+          .delete(oauthAccounts)
+          .where(and(eq(oauthAccounts.userId, this.userId), eq(oauthAccounts.provider, "spotify")))
+          .returning({ id: oauthAccounts.id })
+      ).length;
+      const deletedStates = (
+        await tx
+          .delete(oauthStates)
+          .where(and(eq(oauthStates.userId, this.userId), eq(oauthStates.provider, "spotify")))
+          .returning({ state: oauthStates.state })
+      ).length;
 
       return {
         deletedAccounts,
         deletedStates,
         alreadyDisconnected: deletedAccounts === 0,
       };
-    })();
+    });
   }
 
-  disconnectYouTubeState() {
+  async disconnectYouTubeState() {
     const now = Date.now();
 
-    return this.database.sqlite.transaction(() => {
-      const deletedAccounts = Number(
-        this.db.delete(oauthAccounts).where(eq(oauthAccounts.provider, "youtube")).run().changes ?? 0,
-      );
-      const deletedStates = Number(
-        this.db.delete(oauthStates).where(eq(oauthStates.provider, "youtube")).run().changes ?? 0,
-      );
-      const deletedPlaylistSetting = Number(
-        this.db.delete(appSettings).where(eq(appSettings.key, PLAYLIST_SETTING_KEY)).run().changes ?? 0,
-      );
-      const deletedPlaylistVideos = Number(this.db.delete(playlistVideos).run().changes ?? 0);
-      const resetTrackBindings = Number(
-        this.db
+    return this.db.transaction(async (tx: any) => {
+      const deletedAccounts = (
+        await tx
+          .delete(oauthAccounts)
+          .where(and(eq(oauthAccounts.userId, this.userId), eq(oauthAccounts.provider, "youtube")))
+          .returning({ id: oauthAccounts.id })
+      ).length;
+      const deletedStates = (
+        await tx
+          .delete(oauthStates)
+          .where(and(eq(oauthStates.userId, this.userId), eq(oauthStates.provider, "youtube")))
+          .returning({ state: oauthStates.state })
+      ).length;
+      const deletedPlaylistSetting = (
+        await tx
+          .delete(appSettings)
+          .where(and(eq(appSettings.userId, this.userId), eq(appSettings.key, PLAYLIST_SETTING_KEY)))
+          .returning({ id: appSettings.id })
+      ).length;
+      const deletedPlaylistVideos = (
+        await tx
+          .delete(playlistVideos)
+          .where(eq(playlistVideos.userId, this.userId))
+          .returning({ id: playlistVideos.id })
+      ).length;
+      const resetTrackBindings = (
+        await tx
           .update(trackMappings)
           .set({
             playlistVideoId: null,
             lastSyncedAt: null,
             updatedAt: now,
           })
-          .run().changes ?? 0,
-      );
+          .where(eq(trackMappings.userId, this.userId))
+          .returning({ id: trackMappings.id })
+      ).length;
 
       return {
         deletedAccounts,
@@ -196,17 +288,68 @@ export class AppStore {
         resetTrackBindings,
         alreadyDisconnected: deletedAccounts === 0,
       };
-    })();
+    });
   }
 
-  resetAllProjectState() {
-    return this.database.sqlite.transaction(() => {
-      const deletedAccounts = Number(this.db.delete(oauthAccounts).run().changes ?? 0);
-      const deletedStates = Number(this.db.delete(oauthStates).run().changes ?? 0);
-      const deletedSettings = Number(this.db.delete(appSettings).run().changes ?? 0);
-      const deletedTrackMappings = Number(this.db.delete(trackMappings).run().changes ?? 0);
-      const deletedPlaylistVideos = Number(this.db.delete(playlistVideos).run().changes ?? 0);
-      const deletedSyncRuns = Number(this.db.delete(syncRuns).run().changes ?? 0);
+  async resetAllProjectState() {
+    const now = Date.now();
+
+    return this.db.transaction(async (tx: any) => {
+      const deletedAccounts = (
+        await tx
+          .delete(oauthAccounts)
+          .where(eq(oauthAccounts.userId, this.userId))
+          .returning({ id: oauthAccounts.id })
+      ).length;
+      const deletedStates = (
+        await tx
+          .delete(oauthStates)
+          .where(eq(oauthStates.userId, this.userId))
+          .returning({ state: oauthStates.state })
+      ).length;
+      const deletedSettings = (
+        await tx
+          .delete(appSettings)
+          .where(eq(appSettings.userId, this.userId))
+          .returning({ id: appSettings.id })
+      ).length;
+      const deletedTrackMappings = (
+        await tx
+          .delete(trackMappings)
+          .where(eq(trackMappings.userId, this.userId))
+          .returning({ id: trackMappings.id })
+      ).length;
+      const deletedPlaylistVideos = (
+        await tx
+          .delete(playlistVideos)
+          .where(eq(playlistVideos.userId, this.userId))
+          .returning({ id: playlistVideos.id })
+      ).length;
+      const deletedSyncRuns = (
+        await tx
+          .delete(syncRuns)
+          .where(eq(syncRuns.userId, this.userId))
+          .returning({ id: syncRuns.id })
+      ).length;
+
+      await tx.delete(syncState).where(eq(syncState.userId, this.userId));
+      await tx
+        .insert(syncLock)
+        .values({
+          userId: this.userId,
+          lockName: "hourly-sync",
+          holder: null,
+          lockedUntil: 0,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [syncLock.userId, syncLock.lockName],
+          set: {
+            holder: null,
+            lockedUntil: 0,
+            updatedAt: now,
+          },
+        });
 
       return {
         deletedAccounts,
@@ -216,114 +359,153 @@ export class AppStore {
         deletedPlaylistVideos,
         deletedSyncRuns,
       };
-    })();
+    });
   }
 
-  acquireLock(lockName: string, holder: string, ttlMs: number) {
+  async acquireLock(lockName: string, holder: string, ttlMs: number) {
     const now = Date.now();
     const lockedUntil = now + ttlMs;
+    const result = await this.database.pool.query(
+      `
+        INSERT INTO sync_lock (user_id, lock_name, holder, locked_until, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id, lock_name) DO UPDATE
+        SET holder = EXCLUDED.holder,
+            locked_until = EXCLUDED.locked_until,
+            updated_at = EXCLUDED.updated_at
+        WHERE sync_lock.locked_until <= $5
+           OR sync_lock.holder = $3
+        RETURNING holder
+      `,
+      [this.userId, lockName, holder, lockedUntil, now],
+    );
 
-    return this.database.sqlite.transaction(() => {
-      const existing =
-        this.db.select().from(syncLock).where(eq(syncLock.lockName, lockName)).get() ?? null;
-
-      if (!existing) {
-        this.db
-          .insert(syncLock)
-          .values({
-            lockName,
-            holder,
-            lockedUntil,
-            updatedAt: now,
-          })
-          .run();
-        return true;
-      }
-
-      if (existing.lockedUntil > now && existing.holder !== holder) {
-        return false;
-      }
-
-      this.db
-        .update(syncLock)
-        .set({
-          holder,
-          lockedUntil,
-          updatedAt: now,
-        })
-        .where(eq(syncLock.lockName, lockName))
-        .run();
-
-      return true;
-    })();
+    return (result.rowCount ?? 0) > 0;
   }
 
-  releaseLock(lockName: string, holder: string) {
-    this.db
+  async releaseLock(lockName: string, holder: string) {
+    await this.db
       .update(syncLock)
       .set({
         holder: null,
         lockedUntil: 0,
         updatedAt: Date.now(),
       })
-      .where(and(eq(syncLock.lockName, lockName), eq(syncLock.holder, holder)))
-      .run();
+      .where(
+        and(
+          eq(syncLock.userId, this.userId),
+          eq(syncLock.lockName, lockName),
+          eq(syncLock.holder, holder),
+        ),
+      );
   }
 
-  createSyncRun(trigger: string) {
+  async createSyncRun(trigger: string) {
     const now = Date.now();
-    const result = this.db
+    const result = await this.db
       .insert(syncRuns)
       .values({
+        userId: this.userId,
         trigger,
         status: "running",
         startedAt: now,
       })
-      .run();
+      .returning({ id: syncRuns.id });
 
-    return Number(result.lastInsertRowid);
-  }
-
-  finishSyncRun(runId: number, status: string, stats: unknown, errorSummary?: string) {
-    this.db
-      .update(syncRuns)
-      .set({
-        status,
-        finishedAt: Date.now(),
-        statsJson: JSON.stringify(stats),
-        errorSummary: errorSummary ?? null,
+    await this.db
+      .insert(syncState)
+      .values({
+        userId: this.userId,
+        lastStartedSyncAt: now,
+        lastSuccessfulSyncAt: null,
+        lastFailedSyncAt: null,
+        spotifyScanOffset: null,
+        lastError: null,
+        updatedAt: now,
       })
-      .where(eq(syncRuns.id, runId))
-      .run();
+      .onConflictDoUpdate({
+        target: syncState.userId,
+        set: {
+          lastStartedSyncAt: now,
+          updatedAt: now,
+        },
+      });
+
+    return result[0]?.id ?? 0;
   }
 
-  listRecentSyncRuns(limit = 10) {
-    return this.db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(limit).all();
-  }
-
-  saveSpotifySnapshot(tracks: SpotifyTrack[]) {
+  async finishSyncRun(runId: number, status: string, stats: unknown, errorSummary?: string) {
     const now = Date.now();
-    const existing = this.db
+
+    await this.db.transaction(async (tx: any) => {
+      await tx
+        .update(syncRuns)
+        .set({
+          status,
+          finishedAt: now,
+          statsJson: stats,
+          errorSummary: errorSummary ?? null,
+        })
+        .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)));
+
+      await tx
+        .insert(syncState)
+        .values({
+          userId: this.userId,
+          lastStartedSyncAt: null,
+          lastSuccessfulSyncAt: status === "success" ? now : null,
+          lastFailedSyncAt: status === "success" ? null : now,
+          spotifyScanOffset: null,
+          lastError: errorSummary ?? null,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: syncState.userId,
+          set: {
+            lastSuccessfulSyncAt: status === "success" ? now : syncState.lastSuccessfulSyncAt,
+            lastFailedSyncAt: status === "success" ? syncState.lastFailedSyncAt : now,
+            lastError: status === "success" ? null : errorSummary ?? null,
+            updatedAt: now,
+          },
+        });
+    });
+  }
+
+  async listRecentSyncRuns(limit = 10) {
+    return this.db
+      .select()
+      .from(syncRuns)
+      .where(eq(syncRuns.userId, this.userId))
+      .orderBy(desc(syncRuns.startedAt))
+      .limit(limit);
+  }
+
+  async saveSpotifySnapshot(tracks: SpotifyTrack[]) {
+    const now = Date.now();
+    const existing = await this.db
       .select({
         spotifyTrackId: trackMappings.spotifyTrackId,
         spotifyRemovedAt: trackMappings.spotifyRemovedAt,
       })
       .from(trackMappings)
-      .all();
-    const existingIds = new Set(existing.map((row) => row.spotifyTrackId));
-    const currentIds = new Set(tracks.map((track) => track.spotifyTrackId));
+      .where(eq(trackMappings.userId, this.userId));
+
+    const existingIds = new Set(existing.map((row: { spotifyTrackId: string }) => row.spotifyTrackId));
+    const currentIds = new Set(tracks.map((track: SpotifyTrack) => track.spotifyTrackId));
     let newlySeenTracks = 0;
     let removedFromSpotify = 0;
 
-    this.database.sqlite.transaction(() => {
+    await this.db.transaction(async (tx: any) => {
       for (const track of tracks) {
         if (!existingIds.has(track.spotifyTrackId)) {
           newlySeenTracks += 1;
         }
 
-        this.db
+        await tx
           .insert(trackMappings)
           .values({
+            id: randomUUID(),
+            userId: this.userId,
             spotifyTrackId: track.spotifyTrackId,
             spotifyAddedAt: track.addedAt,
             spotifyRemovedAt: null,
@@ -340,7 +522,7 @@ export class AppStore {
             updatedAt: now,
           })
           .onConflictDoUpdate({
-            target: trackMappings.spotifyTrackId,
+            target: [trackMappings.userId, trackMappings.spotifyTrackId],
             set: {
               spotifyAddedAt: track.addedAt,
               spotifyRemovedAt: null,
@@ -353,8 +535,7 @@ export class AppStore {
               externalUrl: track.externalUrl,
               updatedAt: now,
             },
-          })
-          .run();
+          });
       }
 
       for (const row of existing) {
@@ -363,16 +544,20 @@ export class AppStore {
         }
 
         removedFromSpotify += 1;
-        this.db
+        await tx
           .update(trackMappings)
           .set({
             spotifyRemovedAt: now,
             updatedAt: now,
           })
-          .where(eq(trackMappings.spotifyTrackId, row.spotifyTrackId))
-          .run();
+          .where(
+            and(
+              eq(trackMappings.userId, this.userId),
+              eq(trackMappings.spotifyTrackId, row.spotifyTrackId),
+            ),
+          );
       }
-    })();
+    });
 
     return {
       scannedSpotifyTracks: tracks.length,
@@ -381,31 +566,38 @@ export class AppStore {
     };
   }
 
-  getTrackBySpotifyId(spotifyTrackId: string) {
+  async getTrackBySpotifyId(spotifyTrackId: string) {
     return (
-      this.db
-        .select()
-        .from(trackMappings)
-        .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-        .get() ?? null
+      (
+        await this.db
+          .select()
+          .from(trackMappings)
+          .where(
+            and(
+              eq(trackMappings.userId, this.userId),
+              eq(trackMappings.spotifyTrackId, spotifyTrackId),
+            ),
+          )
+          .limit(1)
+      )[0] ?? null
     );
   }
 
-  listTracksForSync() {
+  async listTracksForSync() {
     return this.db
       .select()
       .from(trackMappings)
-      .where(isNull(trackMappings.spotifyRemovedAt))
-      .orderBy(asc(trackMappings.spotifyAddedAt))
-      .all();
+      .where(and(eq(trackMappings.userId, this.userId), isNull(trackMappings.spotifyRemovedAt)))
+      .orderBy(asc(trackMappings.spotifyAddedAt));
   }
 
-  listAttentionTracks(limit = 30) {
+  async listAttentionTracks(limit = 30) {
     return this.db
       .select()
       .from(trackMappings)
       .where(
         and(
+          eq(trackMappings.userId, this.userId),
           isNull(trackMappings.spotifyRemovedAt),
           or(
             eq(trackMappings.searchStatus, "failed"),
@@ -416,12 +608,11 @@ export class AppStore {
         ),
       )
       .orderBy(desc(trackMappings.updatedAt))
-      .limit(limit)
-      .all();
+      .limit(limit);
   }
 
-  setManualVideoId(spotifyTrackId: string, manualVideoId: string) {
-    this.db
+  async setManualVideoId(spotifyTrackId: string, manualVideoId: string) {
+    await this.db
       .update(trackMappings)
       .set({
         manualVideoId,
@@ -432,24 +623,32 @@ export class AppStore {
         lastError: null,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  clearSearchFailure(spotifyTrackId: string) {
-    this.db
+  async clearSearchFailure(spotifyTrackId: string) {
+    await this.db
       .update(trackMappings)
       .set({
         searchStatus: "pending",
         lastError: null,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  saveMatchResult(spotifyTrackId: string, result: MatchResult) {
-    this.db
+  async saveMatchResult(spotifyTrackId: string, result: MatchResult) {
+    await this.db
       .update(trackMappings)
       .set({
         matchedVideoId: result.candidate.videoId,
@@ -463,16 +662,20 @@ export class AppStore {
         lastError: null,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  markTrackSearchFailure(
+  async markTrackSearchFailure(
     spotifyTrackId: string,
     searchStatus: "failed" | "no_match" | "needs_manual",
     message: string,
   ) {
-    this.db
+    await this.db
       .update(trackMappings)
       .set({
         searchStatus,
@@ -481,12 +684,16 @@ export class AppStore {
         lastError: message,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  markTrackInserted(spotifyTrackId: string, playlistVideoId: string | null) {
-    this.db
+  async markTrackInserted(spotifyTrackId: string, playlistVideoId: string | null) {
+    await this.db
       .update(trackMappings)
       .set({
         playlistVideoId,
@@ -494,23 +701,31 @@ export class AppStore {
         lastError: null,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  resetTrackForRetry(spotifyTrackId: string, message: string) {
-    this.db
+  async resetTrackForRetry(spotifyTrackId: string, message: string) {
+    await this.db
       .update(trackMappings)
       .set({
         searchStatus: "failed",
         lastError: message,
         updatedAt: Date.now(),
       })
-      .where(eq(trackMappings.spotifyTrackId, spotifyTrackId))
-      .run();
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
   }
 
-  replacePlaylistVideos(
+  async replacePlaylistVideos(
     playlistId: string,
     videos: Array<{
       playlistItemId: string;
@@ -521,52 +736,52 @@ export class AppStore {
     }>,
   ) {
     const now = Date.now();
-    this.database.sqlite.transaction(() => {
-      this.db.delete(playlistVideos).where(eq(playlistVideos.playlistId, playlistId)).run();
+    await this.db.transaction(async (tx: any) => {
+      await tx
+        .delete(playlistVideos)
+        .where(and(eq(playlistVideos.userId, this.userId), eq(playlistVideos.playlistId, playlistId)));
 
       for (const video of videos) {
-        this.db
-          .insert(playlistVideos)
-          .values({
-            playlistId,
-            playlistItemId: video.playlistItemId,
-            videoId: video.videoId,
-            videoTitle: video.videoTitle,
-            channelTitle: video.channelTitle,
-            sourceSpotifyTrackId: null,
-            position: video.position,
-            syncedAt: now,
-          })
-          .run();
+        await tx.insert(playlistVideos).values({
+          id: randomUUID(),
+          userId: this.userId,
+          playlistId,
+          playlistItemId: video.playlistItemId,
+          videoId: video.videoId,
+          videoTitle: video.videoTitle,
+          channelTitle: video.channelTitle,
+          sourceSpotifyTrackId: null,
+          position: video.position,
+          syncedAt: now,
+        });
       }
-    })();
+    });
   }
 
-  listPlaylistVideos(playlistId: string) {
+  async listPlaylistVideos(playlistId: string) {
     return this.db
       .select()
       .from(playlistVideos)
-      .where(eq(playlistVideos.playlistId, playlistId))
-      .all();
+      .where(and(eq(playlistVideos.userId, this.userId), eq(playlistVideos.playlistId, playlistId)));
   }
 
-  getDailyQuotaUsage(dayKey: string) {
+  async getDailyQuotaUsage(dayKey: string) {
     const key = `youtube.quota.${dayKey}`;
-    const raw = this.getSetting(key)?.value;
+    const raw = (await this.getSetting(key))?.settingValue;
     return raw ? Number(raw) : 0;
   }
 
-  incrementDailyQuotaUsage(dayKey: string, amount: number) {
+  async incrementDailyQuotaUsage(dayKey: string, amount: number) {
     const key = `youtube.quota.${dayKey}`;
-    const nextValue = this.getDailyQuotaUsage(dayKey) + amount;
-    this.saveSetting(key, String(nextValue));
+    const nextValue = (await this.getDailyQuotaUsage(dayKey)) + amount;
+    await this.saveSetting(key, String(nextValue));
     return nextValue;
   }
 
-  getDashboardSummary() {
-    const oauth = this.listOAuthAccounts();
-    const recentRuns = this.listRecentSyncRuns(10);
-    const attentionTracks = this.listAttentionTracks(30).map((track) => ({
+  async getDashboardSummary() {
+    const oauth = await this.listOAuthAccounts();
+    const recentRuns = await this.listRecentSyncRuns(10);
+    const attentionTracks = (await this.listAttentionTracks(30)).map((track: any) => ({
       spotifyTrackId: track.spotifyTrackId,
       trackName: track.trackName,
       artistNames: JSON.parse(track.artistNamesJson) as string[],
@@ -579,9 +794,9 @@ export class AppStore {
     }));
 
     return {
-      spotifyConnected: oauth.some((account) => account.provider === "spotify" && !account.invalidatedAt),
-      youtubeConnected: oauth.some((account) => account.provider === "youtube" && !account.invalidatedAt),
-      playlistId: this.getManagedPlaylistId(),
+      spotifyConnected: oauth.some((account: any) => account.provider === "spotify" && !account.invalidatedAt),
+      youtubeConnected: oauth.some((account: any) => account.provider === "youtube" && !account.invalidatedAt),
+      playlistId: await this.getManagedPlaylistId(),
       lastRunAt: recentRuns[0]?.finishedAt ?? recentRuns[0]?.startedAt ?? null,
       recentRuns,
       attentionTracks,

@@ -28,15 +28,15 @@ export class QuotaService {
     return `${year}-${month}-${day}`;
   }
 
-  getUsage(dayKey = this.getDayKey()) {
+  async getUsage(dayKey = this.getDayKey()) {
     return this.store.getDailyQuotaUsage(dayKey);
   }
 
-  charge(amount: number, dayKey = this.getDayKey()) {
+  async charge(amount: number, dayKey = this.getDayKey()) {
     return this.store.incrementDailyQuotaUsage(dayKey, amount);
   }
 
-  hasRoom(estimatedAmount: number, dayKey = this.getDayKey()) {
-    return this.getUsage(dayKey) + estimatedAmount <= this.dailyLimit;
+  async hasRoom(estimatedAmount: number, dayKey = this.getDayKey()) {
+    return (await this.getUsage(dayKey)) + estimatedAmount <= this.dailyLimit;
   }
 }

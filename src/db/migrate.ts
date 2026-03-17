@@ -1,25 +1,29 @@
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type { QueryClientLike } from "./client.js";
 
-export function runMigrations(sqlite: Database.Database, migrationsDir: string) {
-  sqlite.exec(`
+interface MigrationClient extends QueryClientLike {
+  connect?: () => Promise<{
+    query: (text: string, params?: unknown[]) => Promise<unknown>;
+    release: () => void;
+  }>;
+}
+
+export async function runMigrations(pool: MigrationClient, migrationsDir: string) {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS __app_migrations (
       name TEXT PRIMARY KEY,
-      applied_at INTEGER NOT NULL
+      applied_at BIGINT NOT NULL
     );
   `);
 
+  const appliedResult = await pool.query("SELECT name FROM __app_migrations ORDER BY name");
   const applied = new Set(
-    sqlite
-      .prepare("SELECT name FROM __app_migrations ORDER BY name")
-      .all()
-      .map((row) => String((row as { name: string }).name)),
+    (appliedResult.rows ?? []).map((row) => String((row as { name: string }).name)),
   );
 
-  const files = fs
-    .readdirSync(migrationsDir)
+  const files = (await fs.readdir(migrationsDir))
     .filter((file) => file.endsWith(".sql"))
     .sort((left, right) => left.localeCompare(right));
 
@@ -28,18 +32,26 @@ export function runMigrations(sqlite: Database.Database, migrationsDir: string) 
       continue;
     }
 
-    const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
-    sqlite.exec("BEGIN");
+    const sql = await fs.readFile(path.join(migrationsDir, file), "utf8");
+    if (!pool.connect) {
+      throw new Error("Migrations require a connect-capable database client");
+    }
+
+    const client = await pool.connect();
 
     try {
-      sqlite.exec(sql);
-      sqlite
-        .prepare("INSERT INTO __app_migrations (name, applied_at) VALUES (?, ?)")
-        .run(file, Date.now());
-      sqlite.exec("COMMIT");
+      await client.query("BEGIN");
+      await client.query(sql);
+      await client.query("INSERT INTO __app_migrations (name, applied_at) VALUES ($1, $2)", [
+        file,
+        Date.now(),
+      ]);
+      await client.query("COMMIT");
     } catch (error) {
-      sqlite.exec("ROLLBACK");
+      await client.query("ROLLBACK");
       throw error;
+    } finally {
+      client.release();
     }
   }
 }

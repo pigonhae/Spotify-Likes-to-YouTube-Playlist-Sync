@@ -19,13 +19,13 @@ export class SyncService {
 
   async run(trigger: string): Promise<SyncRunResult> {
     const holder = randomUUID();
-    const acquired = this.store.acquireLock("hourly-sync", holder, this.config.syncLockTtlMs);
+    const acquired = await this.store.acquireLock("hourly-sync", holder, this.config.syncLockTtlMs);
 
     if (!acquired) {
       throw new AppError("Sync is already running", 409);
     }
 
-    const runId = this.store.createSyncRun(trigger);
+    const runId = await this.store.createSyncRun(trigger);
     const stats: SyncStats = {
       scannedSpotifyTracks: 0,
       newlySeenTracks: 0,
@@ -46,16 +46,16 @@ export class SyncService {
       const youtubeToken = await this.oauthService.getValidAccessToken("youtube");
 
       const spotifyTracks = await this.oauthService.getSpotifyClient().getAllSavedTracks(spotifyToken);
-      Object.assign(stats, this.store.saveSpotifySnapshot(spotifyTracks));
+      Object.assign(stats, await this.store.saveSpotifySnapshot(spotifyTracks));
 
       const playlistId = await this.resolvePlaylistId(youtubeToken);
       const playlistItems = await this.oauthService.getYouTubeClient().listPlaylistItems(youtubeToken, playlistId);
-      this.quotaService.charge(Math.max(1, Math.ceil(playlistItems.length / 50)));
-      this.store.replacePlaylistVideos(playlistId, playlistItems);
+      await this.quotaService.charge(Math.max(1, Math.ceil(playlistItems.length / 50)));
+      await this.store.replacePlaylistVideos(playlistId, playlistItems);
       stats.playlistItemsSeen = playlistItems.length;
 
       const playlistMap = new Map(playlistItems.map((item) => [item.videoId, item]));
-      const tracks = this.store.listTracksForSync();
+      const tracks = await this.store.listTracksForSync();
 
       for (const track of tracks) {
         const manualVideoId = track.manualVideoId;
@@ -63,7 +63,10 @@ export class SyncService {
         const targetVideoId = manualVideoId ?? matchedVideoId;
 
         if (targetVideoId && playlistMap.has(targetVideoId)) {
-          this.store.markTrackInserted(track.spotifyTrackId, playlistMap.get(targetVideoId)?.playlistItemId ?? null);
+          await this.store.markTrackInserted(
+            track.spotifyTrackId,
+            playlistMap.get(targetVideoId)?.playlistItemId ?? null,
+          );
           stats.skippedAlreadyInPlaylist += 1;
           continue;
         }
@@ -85,24 +88,28 @@ export class SyncService {
               albumName: track.albumName,
               durationMs: track.durationMs,
             });
-            this.store.saveMatchResult(track.spotifyTrackId, match.best);
+            await this.store.saveMatchResult(track.spotifyTrackId, match.best);
             videoId = match.best.candidate.videoId;
           }
 
           if (!videoId) {
-            this.store.markTrackSearchFailure(track.spotifyTrackId, "needs_manual", "No target video ID available");
+            await this.store.markTrackSearchFailure(
+              track.spotifyTrackId,
+              "needs_manual",
+              "No target video ID available",
+            );
             stats.noMatchCount += 1;
             continue;
           }
 
-          if (!this.quotaService.hasRoom(50)) {
+          if (!(await this.quotaService.hasRoom(50))) {
             throw new QuotaExceededError("Not enough YouTube quota remaining for playlist insertion");
           }
 
           const playlistItemId = await this.oauthService
             .getYouTubeClient()
             .insertPlaylistItem(youtubeToken, playlistId, videoId);
-          this.quotaService.charge(50);
+          await this.quotaService.charge(50);
           playlistMap.set(videoId, {
             playlistItemId,
             videoId,
@@ -110,7 +117,7 @@ export class SyncService {
             channelTitle: track.matchedChannelTitle,
             position: null,
           });
-          this.store.markTrackInserted(track.spotifyTrackId, playlistItemId);
+          await this.store.markTrackInserted(track.spotifyTrackId, playlistItemId);
           stats.insertedTracks += 1;
         } catch (error) {
           if (error instanceof QuotaExceededError) {
@@ -119,24 +126,24 @@ export class SyncService {
           }
 
           if (error instanceof NoSearchResultsError) {
-            this.store.markTrackSearchFailure(track.spotifyTrackId, "no_match", error.message);
+            await this.store.markTrackSearchFailure(track.spotifyTrackId, "no_match", error.message);
             stats.noMatchCount += 1;
             continue;
           }
 
           if (error instanceof LowConfidenceMatchError) {
-            this.store.markTrackSearchFailure(track.spotifyTrackId, "needs_manual", error.message);
+            await this.store.markTrackSearchFailure(track.spotifyTrackId, "needs_manual", error.message);
             stats.noMatchCount += 1;
             continue;
           }
 
           const message = error instanceof Error ? error.message : String(error);
-          this.store.markTrackSearchFailure(track.spotifyTrackId, "failed", message);
+          await this.store.markTrackSearchFailure(track.spotifyTrackId, "failed", message);
           stats.failedCount += 1;
         }
       }
 
-      this.store.finishSyncRun(runId, "success", stats);
+      await this.store.finishSyncRun(runId, "success", stats);
       return {
         runId,
         status: "success",
@@ -146,7 +153,7 @@ export class SyncService {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof QuotaExceededError) {
         stats.quotaAbort = true;
-        this.store.finishSyncRun(runId, "quota_exhausted", stats, message);
+        await this.store.finishSyncRun(runId, "quota_exhausted", stats, message);
         return {
           runId,
           status: "quota_exhausted",
@@ -155,23 +162,23 @@ export class SyncService {
         };
       }
 
-      this.store.finishSyncRun(runId, "failed", stats, message);
+      await this.store.finishSyncRun(runId, "failed", stats, message);
       throw error;
     } finally {
-      this.store.releaseLock("hourly-sync", holder);
+      await this.store.releaseLock("hourly-sync", holder);
     }
   }
 
   private async resolvePlaylistId(youtubeToken: string) {
-    const configuredPlaylistId = this.config.YOUTUBE_PLAYLIST_ID ?? this.store.getManagedPlaylistId();
+    const configuredPlaylistId = this.config.YOUTUBE_PLAYLIST_ID ?? await this.store.getManagedPlaylistId();
     if (configuredPlaylistId) {
       if (!this.config.YOUTUBE_PLAYLIST_ID) {
-        this.store.saveManagedPlaylistId(configuredPlaylistId);
+        await this.store.saveManagedPlaylistId(configuredPlaylistId);
       }
       return configuredPlaylistId;
     }
 
-    if (!this.quotaService.hasRoom(50)) {
+    if (!(await this.quotaService.hasRoom(50))) {
       throw new QuotaExceededError("Not enough YouTube quota remaining to create the playlist");
     }
 
@@ -181,8 +188,8 @@ export class SyncService {
       this.config.YOUTUBE_PLAYLIST_DESCRIPTION,
       this.config.YOUTUBE_PLAYLIST_PRIVACY,
     );
-    this.quotaService.charge(50);
-    this.store.saveManagedPlaylistId(playlistId);
+    await this.quotaService.charge(50);
+    await this.store.saveManagedPlaylistId(playlistId);
     return playlistId;
   }
 }

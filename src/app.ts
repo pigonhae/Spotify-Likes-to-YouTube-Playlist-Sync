@@ -5,7 +5,7 @@ import formbody from "@fastify/formbody";
 import { getConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
-import { AppStore } from "./db/store.js";
+import { createAppStore, type AppStore } from "./db/store.js";
 import { YouTubeSearchService } from "./providers/search/youtube-search.js";
 import { registerRoutes } from "./routes/index.js";
 import { AccountManagementService } from "./services/account-management-service.js";
@@ -24,9 +24,13 @@ export interface AppContext {
 
 export async function buildApp() {
   const config = getConfig();
-  const database = createDatabase(config.DATABASE_PATH);
-  runMigrations(database.sqlite, "drizzle");
-  const store = new AppStore(database);
+  const database = createDatabase({
+    connectionString: config.DATABASE_URL,
+    ssl: config.DATABASE_SSL,
+    max: config.DATABASE_POOL_MAX,
+  });
+  await runMigrations(database.pool, "drizzle");
+  const store = await createAppStore(database, config.OWNER_USER_KEY);
   const quotaService = new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT);
   const oauthService = new OAuthService(config, store);
   const youtubeSearchService = new YouTubeSearchService(
@@ -80,6 +84,10 @@ export async function buildApp() {
     ok: true,
     timestamp: new Date().toISOString(),
   }));
+
+  app.addHook("onClose", async () => {
+    await database.close();
+  });
 
   await registerRoutes(app, context);
 

@@ -1,24 +1,42 @@
-import fs from "node:fs";
-import path from "node:path";
-
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 
 import * as schema from "./schema.js";
 
-export type AppDatabase = ReturnType<typeof createDatabase>;
+export interface QueryClientLike {
+  query: (text: string, params?: unknown[]) => Promise<{
+    rows?: unknown[];
+    rowCount?: number | null;
+  }>;
+  end?: () => Promise<void>;
+}
 
-export function createDatabase(databasePath: string) {
-  const resolvedPath = databasePath === ":memory:" ? databasePath : path.resolve(databasePath);
-  if (resolvedPath !== ":memory:") {
-    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-  }
+export interface AppDatabase {
+  pool: QueryClientLike;
+  db: any;
+  close: () => Promise<void>;
+}
 
-  const sqlite = new Database(resolvedPath);
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
-  sqlite.pragma("busy_timeout = 5000");
+export function createDatabase(input: {
+  connectionString: string;
+  ssl?: boolean;
+  max?: number;
+  PoolClass?: typeof Pool;
+}): AppDatabase {
+  const PoolClass = input.PoolClass ?? Pool;
+  const pool = new PoolClass({
+    connectionString: input.connectionString,
+    max: input.max,
+    ssl: input.ssl ? { rejectUnauthorized: false } : undefined,
+  }) as unknown as Pool;
 
-  const db = drizzle(sqlite, { schema });
-  return { sqlite, db };
+  const db = drizzle(pool as never, { schema });
+
+  return {
+    pool,
+    db,
+    close: async () => {
+      await pool.end();
+    },
+  };
 }

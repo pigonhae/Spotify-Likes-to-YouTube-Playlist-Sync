@@ -11,7 +11,21 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().url(),
   APP_BASIC_AUTH_USER: z.string().min(1),
   APP_BASIC_AUTH_PASS: z.string().min(1),
-  DATABASE_PATH: z.string().min(1).default("./data/app.db"),
+  DATABASE_URL: z.string().min(1),
+  OWNER_USER_KEY: z.string().min(1).default("default-owner"),
+  DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
+  DATABASE_SSL: z.preprocess(
+    (value) => {
+      if (typeof value === "boolean") {
+        return value;
+      }
+      if (typeof value === "string") {
+        return value === "true";
+      }
+      return false;
+    },
+    z.boolean().default(false),
+  ),
   TOKEN_ENCRYPTION_KEY: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "TOKEN_ENCRYPTION_KEY must be a 64-character hex string"),
@@ -51,7 +65,10 @@ export interface AppConfig {
   APP_BASE_URL: string;
   APP_BASIC_AUTH_USER: string;
   APP_BASIC_AUTH_PASS: string;
-  DATABASE_PATH: string;
+  DATABASE_URL: string;
+  OWNER_USER_KEY: string;
+  DATABASE_POOL_MAX: number;
+  DATABASE_SSL: boolean;
   TOKEN_ENCRYPTION_KEY: string;
   SPOTIFY_CLIENT_ID: string;
   SPOTIFY_CLIENT_SECRET: string;

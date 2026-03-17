@@ -26,7 +26,7 @@ export class YouTubeSearchService {
       candidates.length === 0 ||
       (preview && preview.score < this.config.MATCH_THRESHOLD + 10)
     ) {
-      if (!this.quotaService.hasRoom(100)) {
+      if (!(await this.quotaService.hasRoom(100))) {
         throw new QuotaExceededError("Not enough YouTube quota remaining for search fallback");
       }
 
@@ -34,7 +34,7 @@ export class YouTubeSearchService {
         candidates.length === 0 ? fallbackQuery : primaryQuery,
         this.config.YOUTUBE_FALLBACK_RESULT_LIMIT,
       );
-      this.quotaService.charge(100);
+      await this.quotaService.charge(100);
       candidates = dedupeCandidates([...candidates, ...officialCandidates]);
     }
 
@@ -42,7 +42,7 @@ export class YouTubeSearchService {
       throw new NoSearchResultsError(`No YouTube candidates found for ${track.trackName}`);
     }
 
-    if (!this.quotaService.hasRoom(1)) {
+    if (!(await this.quotaService.hasRoom(1))) {
       throw new QuotaExceededError("Not enough YouTube quota remaining for candidate validation");
     }
 
@@ -51,7 +51,7 @@ export class YouTubeSearchService {
         .slice(0, 8)
         .map((candidate) => candidate.videoId),
     );
-    this.quotaService.charge(1);
+    await this.quotaService.charge(1);
 
     const merged = mergeCandidates(candidates, validated);
     return chooseBestMatch(track, merged, this.config.MATCH_THRESHOLD);

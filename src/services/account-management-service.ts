@@ -24,21 +24,21 @@ export class AccountManagementService {
     private readonly store: AppStore,
   ) {}
 
-  disconnectSpotify() {
+  async disconnectSpotify() {
     return this.runLocked(() => this.store.disconnectSpotifyState());
   }
 
-  disconnectYouTube() {
+  async disconnectYouTube() {
     return this.runLocked(() => this.store.disconnectYouTubeState());
   }
 
-  resetAll() {
+  async resetAll() {
     return this.runLocked(() => this.store.resetAllProjectState());
   }
 
-  private runLocked<T>(action: () => T) {
+  private async runLocked<T>(action: () => Promise<T>) {
     const holder = randomUUID();
-    const acquired = this.store.acquireLock(
+    const acquired = await this.store.acquireLock(
       ACCOUNT_ACTION_LOCK_NAME,
       holder,
       this.config.syncLockTtlMs,
@@ -52,9 +52,9 @@ export class AccountManagementService {
     }
 
     try {
-      return action();
+      return await action();
     } finally {
-      this.store.releaseLock(ACCOUNT_ACTION_LOCK_NAME, holder);
+      await this.store.releaseLock(ACCOUNT_ACTION_LOCK_NAME, holder);
     }
   }
 }

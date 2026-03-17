@@ -1,109 +1,152 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { randomUUID } from "node:crypto";
 
-export const oauthAccounts = sqliteTable("oauth_accounts", {
-  provider: text("provider").primaryKey(),
+import {
+  bigint,
+  bigserial,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().$defaultFn(() => randomUUID()),
+  userKey: text("user_key").notNull(),
+  displayName: text("display_name"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  userKeyUnique: uniqueIndex("users_user_key_uidx").on(table.userKey),
+}));
+
+export const oauthAccounts = pgTable("oauth_accounts", {
+  id: uuid("id").primaryKey().$defaultFn(() => randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull(),
   encryptedAccessToken: text("encrypted_access_token").notNull(),
   encryptedRefreshToken: text("encrypted_refresh_token"),
-  tokenExpiresAt: integer("token_expires_at"),
+  tokenExpiresAt: bigint("token_expires_at", { mode: "number" }),
   scope: text("scope"),
   externalUserId: text("external_user_id"),
   externalDisplayName: text("external_display_name"),
-  connectedAt: integer("connected_at").notNull(),
-  invalidatedAt: integer("invalidated_at"),
+  connectedAt: bigint("connected_at", { mode: "number" }).notNull(),
+  invalidatedAt: bigint("invalidated_at", { mode: "number" }),
   lastRefreshError: text("last_refresh_error"),
-  createdAt: integer("created_at").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  userProviderUnique: uniqueIndex("oauth_accounts_user_provider_uidx").on(table.userId, table.provider),
+  userProviderIdx: index("oauth_accounts_user_provider_idx").on(table.userId, table.provider),
+}));
 
-export const oauthStates = sqliteTable(
-  "oauth_states",
-  {
-    state: text("state").primaryKey(),
-    provider: text("provider").notNull(),
-    createdAt: integer("created_at").notNull(),
-    expiresAt: integer("expires_at").notNull(),
-  },
-  (table) => ({
-    providerIdx: index("oauth_states_provider_idx").on(table.provider),
-  }),
-);
+export const oauthStates = pgTable("oauth_states", {
+  state: text("state").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  providerIdx: index("oauth_states_user_provider_idx").on(table.userId, table.provider),
+  expiresIdx: index("oauth_states_expires_idx").on(table.expiresAt),
+}));
 
-export const appSettings = sqliteTable("app_settings", {
-  key: text("key").primaryKey(),
-  value: text("value").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const appSettings = pgTable("user_settings", {
+  id: uuid("id").primaryKey().$defaultFn(() => randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  key: text("key").notNull(),
+  settingValue: text("value").notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  userKeyUnique: uniqueIndex("user_settings_user_key_uidx").on(table.userId, table.key),
+}));
 
-export const trackMappings = sqliteTable(
-  "track_mappings",
-  {
-    spotifyTrackId: text("spotify_track_id").primaryKey(),
-    spotifyAddedAt: integer("spotify_added_at").notNull(),
-    spotifyRemovedAt: integer("spotify_removed_at"),
-    trackName: text("track_name").notNull(),
-    artistNamesJson: text("artist_names_json").notNull(),
-    albumName: text("album_name"),
-    albumReleaseDate: text("album_release_date"),
-    durationMs: integer("duration_ms").notNull(),
-    isrc: text("isrc"),
-    externalUrl: text("external_url"),
-    manualVideoId: text("manual_video_id"),
-    matchedVideoId: text("matched_video_id"),
-    matchedVideoTitle: text("matched_video_title"),
-    matchedChannelTitle: text("matched_channel_title"),
-    matchedScore: integer("matched_score"),
-    matchedSource: text("matched_source"),
-    searchStatus: text("search_status").notNull(),
-    searchAttempts: integer("search_attempts").notNull(),
-    lastSearchAt: integer("last_search_at"),
-    lastError: text("last_error"),
-    playlistVideoId: text("playlist_video_id"),
-    lastSyncedAt: integer("last_synced_at"),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (table) => ({
-    removedIdx: index("track_mappings_removed_idx").on(table.spotifyRemovedAt),
-    statusIdx: index("track_mappings_status_idx").on(table.searchStatus),
-    matchedVideoIdx: index("track_mappings_matched_video_idx").on(table.matchedVideoId),
-  }),
-);
+export const trackMappings = pgTable("track_mappings", {
+  id: uuid("id").primaryKey().$defaultFn(() => randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  spotifyTrackId: text("spotify_track_id").notNull(),
+  spotifyAddedAt: bigint("spotify_added_at", { mode: "number" }).notNull(),
+  spotifyRemovedAt: bigint("spotify_removed_at", { mode: "number" }),
+  trackName: text("track_name").notNull(),
+  artistNamesJson: text("artist_names_json").notNull(),
+  albumName: text("album_name"),
+  albumReleaseDate: text("album_release_date"),
+  durationMs: integer("duration_ms").notNull(),
+  isrc: text("isrc"),
+  externalUrl: text("external_url"),
+  manualVideoId: text("manual_video_id"),
+  matchedVideoId: text("matched_video_id"),
+  matchedVideoTitle: text("matched_video_title"),
+  matchedChannelTitle: text("matched_channel_title"),
+  matchedScore: integer("matched_score"),
+  matchedSource: text("matched_source"),
+  searchStatus: text("search_status").notNull(),
+  searchAttempts: integer("search_attempts").notNull(),
+  lastSearchAt: bigint("last_search_at", { mode: "number" }),
+  lastError: text("last_error"),
+  playlistVideoId: text("playlist_video_id"),
+  lastSyncedAt: bigint("last_synced_at", { mode: "number" }),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  userTrackUnique: uniqueIndex("track_mappings_user_track_uidx").on(table.userId, table.spotifyTrackId),
+  removedIdx: index("track_mappings_user_removed_idx").on(table.userId, table.spotifyRemovedAt),
+  statusIdx: index("track_mappings_user_status_idx").on(table.userId, table.searchStatus),
+  matchedVideoIdx: index("track_mappings_user_matched_video_idx").on(table.userId, table.matchedVideoId),
+}));
 
-export const playlistVideos = sqliteTable(
-  "playlist_videos",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    playlistId: text("playlist_id").notNull(),
-    playlistItemId: text("playlist_item_id").notNull(),
-    videoId: text("video_id").notNull(),
-    videoTitle: text("video_title"),
-    channelTitle: text("channel_title"),
-    sourceSpotifyTrackId: text("source_spotify_track_id"),
-    position: integer("position"),
-    syncedAt: integer("synced_at").notNull(),
-  },
-  (table) => ({
-    playlistVideoUnique: uniqueIndex("playlist_videos_playlist_video_uidx").on(
-      table.playlistId,
-      table.videoId,
-    ),
-    playlistIdx: index("playlist_videos_playlist_idx").on(table.playlistId),
-  }),
-);
+export const playlistVideos = pgTable("playlist_videos", {
+  id: uuid("id").primaryKey().$defaultFn(() => randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  playlistId: text("playlist_id").notNull(),
+  playlistItemId: text("playlist_item_id").notNull(),
+  videoId: text("video_id").notNull(),
+  videoTitle: text("video_title"),
+  channelTitle: text("channel_title"),
+  sourceSpotifyTrackId: text("source_spotify_track_id"),
+  position: integer("position"),
+  syncedAt: bigint("synced_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  playlistVideoUnique: uniqueIndex("playlist_videos_user_playlist_video_uidx").on(
+    table.userId,
+    table.playlistId,
+    table.videoId,
+  ),
+  playlistIdx: index("playlist_videos_user_playlist_idx").on(table.userId, table.playlistId),
+}));
 
-export const syncRuns = sqliteTable("sync_runs", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const syncRuns = pgTable("sync_runs", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   trigger: text("trigger").notNull(),
   status: text("status").notNull(),
-  startedAt: integer("started_at").notNull(),
-  finishedAt: integer("finished_at"),
-  statsJson: text("stats_json"),
+  startedAt: bigint("started_at", { mode: "number" }).notNull(),
+  finishedAt: bigint("finished_at", { mode: "number" }),
+  statsJson: jsonb("stats_json").$type<unknown>(),
   errorSummary: text("error_summary"),
+}, (table) => ({
+  startedAtIdx: index("sync_runs_user_started_at_idx").on(table.userId, table.startedAt),
+}));
+
+export const syncState = pgTable("sync_state", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  lastStartedSyncAt: bigint("last_started_sync_at", { mode: "number" }),
+  lastSuccessfulSyncAt: bigint("last_successful_sync_at", { mode: "number" }),
+  lastFailedSyncAt: bigint("last_failed_sync_at", { mode: "number" }),
+  spotifyScanOffset: integer("spotify_scan_offset"),
+  lastError: text("last_error"),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
-export const syncLock = sqliteTable("sync_lock", {
-  lockName: text("lock_name").primaryKey(),
+export const syncLock = pgTable("sync_lock", {
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  lockName: text("lock_name").notNull(),
   holder: text("holder"),
-  lockedUntil: integer("locked_until").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+  lockedUntil: bigint("locked_until", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: "sync_lock_pkey", columns: [table.userId, table.lockName] }),
+}));

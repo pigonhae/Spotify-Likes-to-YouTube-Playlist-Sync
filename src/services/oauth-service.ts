@@ -30,9 +30,9 @@ export class OAuthService {
     return this.youtubeClient;
   }
 
-  createAuthorizationUrl(provider: Provider) {
-    this.store.cleanupExpiredStates();
-    const state = this.store.createOAuthState(provider);
+  async createAuthorizationUrl(provider: Provider) {
+    await this.store.cleanupExpiredStates();
+    const state = await this.store.createOAuthState(provider);
     if (provider === "spotify") {
       return this.spotifyClient.buildAuthorizationUrl(state);
     }
@@ -40,13 +40,13 @@ export class OAuthService {
   }
 
   async handleSpotifyCallback(code: string, state: string) {
-    if (!this.store.consumeOAuthState("spotify", state)) {
+    if (!(await this.store.consumeOAuthState("spotify", state))) {
       throw new AppError("Invalid or expired Spotify OAuth state", 400);
     }
 
     const token = await this.spotifyClient.exchangeCodeForToken(code);
     const profile = await this.spotifyClient.getCurrentUser(token.access_token);
-    this.store.upsertOAuthAccount({
+    await this.store.upsertOAuthAccount({
       provider: "spotify",
       encryptedAccessToken: this.cipher.encrypt(token.access_token),
       encryptedRefreshToken: token.refresh_token ? this.cipher.encrypt(token.refresh_token) : null,
@@ -58,13 +58,13 @@ export class OAuthService {
   }
 
   async handleYouTubeCallback(code: string, state: string) {
-    if (!this.store.consumeOAuthState("youtube", state)) {
+    if (!(await this.store.consumeOAuthState("youtube", state))) {
       throw new AppError("Invalid or expired YouTube OAuth state", 400);
     }
 
     const token = await this.youtubeClient.exchangeCodeForToken(code);
     const channel = await this.youtubeClient.getCurrentChannel(token.access_token);
-    this.store.upsertOAuthAccount({
+    await this.store.upsertOAuthAccount({
       provider: "youtube",
       encryptedAccessToken: this.cipher.encrypt(token.access_token),
       encryptedRefreshToken: token.refresh_token ? this.cipher.encrypt(token.refresh_token) : null,
@@ -76,7 +76,7 @@ export class OAuthService {
   }
 
   async getValidAccessToken(provider: Provider) {
-    const account = this.store.getOAuthAccount(provider);
+    const account = await this.store.getOAuthAccount(provider);
     if (!account) {
       throw new AppError(`${provider} account is not connected`, 400);
     }
@@ -94,14 +94,14 @@ export class OAuthService {
       : null;
 
     if (!refreshToken) {
-      this.store.markOAuthAccountInvalid(provider, "Missing refresh token");
+      await this.store.markOAuthAccountInvalid(provider, "Missing refresh token");
       throw new AppError(`${provider} account cannot be refreshed`, 400);
     }
 
     try {
       if (provider === "spotify") {
         const refreshed = await this.spotifyClient.refreshAccessToken(refreshToken);
-        this.store.upsertOAuthAccount({
+        await this.store.upsertOAuthAccount({
           provider,
           encryptedAccessToken: this.cipher.encrypt(refreshed.access_token),
           encryptedRefreshToken: refreshed.refresh_token
@@ -116,7 +116,7 @@ export class OAuthService {
       }
 
       const refreshed = await this.youtubeClient.refreshAccessToken(refreshToken);
-      this.store.upsertOAuthAccount({
+      await this.store.upsertOAuthAccount({
         provider,
         encryptedAccessToken: this.cipher.encrypt(refreshed.access_token),
         encryptedRefreshToken: refreshed.refresh_token
@@ -130,7 +130,7 @@ export class OAuthService {
       return refreshed.access_token;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.store.markOAuthAccountInvalid(provider, message);
+      await this.store.markOAuthAccountInvalid(provider, message);
       throw new AppError(`${provider} account refresh failed: ${message}`, 400);
     }
   }
