@@ -207,6 +207,26 @@ describe("renderDashboard", () => {
     expect(html).toContain("mqdefault.jpg");
     expect(html).toContain("Enter manual match");
   });
+
+  it("embeds valid JSON state blocks for the client bootstrap script", () => {
+    const html = renderDashboard({
+      language: "en",
+      summary: createSummary({}),
+      accounts: [],
+    });
+
+    const liveDataMatch = html.match(
+      /<script id="dashboard-live-data" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    const catalogMatch = html.match(
+      /<script id="dashboard-message-catalog" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+
+    expect(liveDataMatch?.[1]).toBeTruthy();
+    expect(catalogMatch?.[1]).toBeTruthy();
+    expect(() => JSON.parse(liveDataMatch?.[1] ?? "")).not.toThrow();
+    expect(() => JSON.parse(catalogMatch?.[1] ?? "")).not.toThrow();
+  });
 });
 
 function createSummary(partial: Record<string, unknown> = {}) {

@@ -46,8 +46,8 @@ export function renderDashboard(input: {
     <div id="attention-root">${sections.attention}</div>
     <div id="danger-root">${sections.danger}</div>
   </main>
-  <script id="dashboard-live-data" type="application/json">${escapeHtml(JSON.stringify({ language: input.language, summary: input.summary, accounts: input.accounts }))}</script>
-  <script id="dashboard-message-catalog" type="application/json">${escapeHtml(JSON.stringify(serializeMessageCatalog()))}</script>
+  <script id="dashboard-live-data" type="application/json">${serializeForScriptTag({ language: input.language, summary: input.summary, accounts: input.accounts })}</script>
+  <script id="dashboard-message-catalog" type="application/json">${serializeForScriptTag(serializeMessageCatalog())}</script>
   <script>${clientScript()}</script>
 </body>
 </html>`;
@@ -258,6 +258,14 @@ function getThumbnailUrl(videoId: string) {
 
 function formatDate(language: Language, timestamp: number | null | undefined) {
   return formatDateForLanguage(language, timestamp);
+}
+
+function serializeForScriptTag(value: unknown) {
+  return JSON.stringify(value)
+    .replace(/<\//g, "<\\/")
+    .replace(/<!--/g, "<\\!--")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 function safeParseJson(raw: unknown) {
