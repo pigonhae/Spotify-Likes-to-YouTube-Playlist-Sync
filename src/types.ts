@@ -45,3 +45,12 @@ export interface SyncStats {
   failedCount: number;
   quotaAbort: boolean;
 }
+
+export type SyncRunStatus = "success" | "quota_exhausted";
+
+export interface SyncRunResult {
+  runId: number;
+  status: SyncRunStatus;
+  stats: SyncStats;
+  error?: string;
+}

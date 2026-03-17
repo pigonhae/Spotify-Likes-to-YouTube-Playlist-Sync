@@ -146,6 +146,79 @@ export class AppStore {
     return this.getSetting(PLAYLIST_SETTING_KEY)?.value ?? null;
   }
 
+  disconnectSpotifyState() {
+    return this.database.sqlite.transaction(() => {
+      const deletedAccounts = Number(
+        this.db.delete(oauthAccounts).where(eq(oauthAccounts.provider, "spotify")).run().changes ?? 0,
+      );
+      const deletedStates = Number(
+        this.db.delete(oauthStates).where(eq(oauthStates.provider, "spotify")).run().changes ?? 0,
+      );
+
+      return {
+        deletedAccounts,
+        deletedStates,
+        alreadyDisconnected: deletedAccounts === 0,
+      };
+    })();
+  }
+
+  disconnectYouTubeState() {
+    const now = Date.now();
+
+    return this.database.sqlite.transaction(() => {
+      const deletedAccounts = Number(
+        this.db.delete(oauthAccounts).where(eq(oauthAccounts.provider, "youtube")).run().changes ?? 0,
+      );
+      const deletedStates = Number(
+        this.db.delete(oauthStates).where(eq(oauthStates.provider, "youtube")).run().changes ?? 0,
+      );
+      const deletedPlaylistSetting = Number(
+        this.db.delete(appSettings).where(eq(appSettings.key, PLAYLIST_SETTING_KEY)).run().changes ?? 0,
+      );
+      const deletedPlaylistVideos = Number(this.db.delete(playlistVideos).run().changes ?? 0);
+      const resetTrackBindings = Number(
+        this.db
+          .update(trackMappings)
+          .set({
+            playlistVideoId: null,
+            lastSyncedAt: null,
+            updatedAt: now,
+          })
+          .run().changes ?? 0,
+      );
+
+      return {
+        deletedAccounts,
+        deletedStates,
+        deletedPlaylistSetting,
+        deletedPlaylistVideos,
+        resetTrackBindings,
+        alreadyDisconnected: deletedAccounts === 0,
+      };
+    })();
+  }
+
+  resetAllProjectState() {
+    return this.database.sqlite.transaction(() => {
+      const deletedAccounts = Number(this.db.delete(oauthAccounts).run().changes ?? 0);
+      const deletedStates = Number(this.db.delete(oauthStates).run().changes ?? 0);
+      const deletedSettings = Number(this.db.delete(appSettings).run().changes ?? 0);
+      const deletedTrackMappings = Number(this.db.delete(trackMappings).run().changes ?? 0);
+      const deletedPlaylistVideos = Number(this.db.delete(playlistVideos).run().changes ?? 0);
+      const deletedSyncRuns = Number(this.db.delete(syncRuns).run().changes ?? 0);
+
+      return {
+        deletedAccounts,
+        deletedStates,
+        deletedSettings,
+        deletedTrackMappings,
+        deletedPlaylistVideos,
+        deletedSyncRuns,
+      };
+    })();
+  }
+
   acquireLock(lockName: string, holder: string, ttlMs: number) {
     const now = Date.now();
     const lockedUntil = now + ttlMs;

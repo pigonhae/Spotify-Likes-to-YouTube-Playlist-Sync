@@ -6,7 +6,7 @@ import type { AppConfig } from "../../config.js";
 import type { AppStore } from "../../db/store.js";
 import { OAuthService } from "../oauth-service.js";
 import { QuotaService } from "../quota-service.js";
-import type { SyncStats } from "../../types.js";
+import type { SyncRunResult, SyncStats } from "../../types.js";
 
 export class SyncService {
   constructor(
@@ -17,7 +17,7 @@ export class SyncService {
     private readonly youtubeSearchService: YouTubeSearchService,
   ) {}
 
-  async run(trigger: string) {
+  async run(trigger: string): Promise<SyncRunResult> {
     const holder = randomUUID();
     const acquired = this.store.acquireLock("hourly-sync", holder, this.config.syncLockTtlMs);
 
@@ -136,15 +136,26 @@ export class SyncService {
         }
       }
 
-      this.store.finishSyncRun(runId, stats.quotaAbort ? "quota_exhausted" : "success", stats);
+      this.store.finishSyncRun(runId, "success", stats);
       return {
         runId,
+        status: "success",
         stats,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = error instanceof QuotaExceededError ? "quota_exhausted" : "failed";
-      this.store.finishSyncRun(runId, status, stats, message);
+      if (error instanceof QuotaExceededError) {
+        stats.quotaAbort = true;
+        this.store.finishSyncRun(runId, "quota_exhausted", stats, message);
+        return {
+          runId,
+          status: "quota_exhausted",
+          stats,
+          error: message,
+        };
+      }
+
+      this.store.finishSyncRun(runId, "failed", stats, message);
       throw error;
     } finally {
       this.store.releaseLock("hourly-sync", holder);

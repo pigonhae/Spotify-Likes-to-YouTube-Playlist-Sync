@@ -35,6 +35,7 @@ const envSchema = z.object({
     .string()
     .default("Automatically synced from Spotify liked songs."),
   YOUTUBE_PLAYLIST_PRIVACY: z.enum(["public", "private", "unlisted"]).default("unlisted"),
+  YOUTUBE_DAILY_QUOTA_LIMIT: z.coerce.number().int().positive().default(10_000),
   YOUTUBE_SEARCH_PROVIDER: z.enum(["hybrid", "official"]).default("hybrid"),
   SYNC_LOCK_TTL_MINUTES: z.coerce.number().int().positive().default(55),
   SPOTIFY_PAGE_SIZE: z.coerce.number().int().min(1).max(50).default(50),
@@ -62,6 +63,7 @@ export interface AppConfig {
   YOUTUBE_PLAYLIST_TITLE: string;
   YOUTUBE_PLAYLIST_DESCRIPTION: string;
   YOUTUBE_PLAYLIST_PRIVACY: "public" | "private" | "unlisted";
+  YOUTUBE_DAILY_QUOTA_LIMIT: number;
   YOUTUBE_SEARCH_PROVIDER: "hybrid" | "official";
   SYNC_LOCK_TTL_MINUTES: number;
   SPOTIFY_PAGE_SIZE: number;
@@ -84,7 +86,7 @@ export function getConfig(): AppConfig {
   const env = envSchema.parse(process.env);
   const appBaseUrl = env.APP_BASE_URL.replace(/\/+$/, "");
 
-  cachedConfig = {
+  const config: AppConfig = {
     ...env,
     YOUTUBE_PLAYLIST_ID: env.YOUTUBE_PLAYLIST_ID,
     appBaseUrl,
@@ -94,5 +96,6 @@ export function getConfig(): AppConfig {
     isProduction: env.NODE_ENV === "production",
   };
 
-  return cachedConfig!;
+  cachedConfig = config;
+  return cachedConfig;
 }

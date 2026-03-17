@@ -1,7 +1,10 @@
 import { escapeHtml } from "../lib/strings.js";
 
+type MessageLevel = "success" | "error";
+
 export function renderDashboard(input: {
   message?: string;
+  messageLevel?: MessageLevel;
   summary: ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>;
   accounts: Array<{
     provider: string;
@@ -12,6 +15,7 @@ export function renderDashboard(input: {
 }) {
   const spotifyAccount = input.accounts.find((account) => account.provider === "spotify");
   const youtubeAccount = input.accounts.find((account) => account.provider === "youtube");
+  const canRunSync = input.summary.spotifyConnected && input.summary.youtubeConnected;
 
   return `<!doctype html>
 <html lang="ko">
@@ -28,7 +32,12 @@ export function renderDashboard(input: {
         --muted: #6f675d;
         --line: #ded7cb;
         --accent: #0d7c66;
+        --accent-strong: #0a6856;
         --danger: #b93a32;
+        --danger-bg: #fff3f1;
+        --danger-line: #f0b7b1;
+        --success-bg: #eef8f4;
+        --success-line: #b7dccd;
       }
       * { box-sizing: border-box; }
       body {
@@ -59,6 +68,10 @@ export function renderDashboard(input: {
         padding: 18px;
         box-shadow: 0 10px 35px rgba(60, 45, 20, 0.06);
       }
+      .panel.danger {
+        border-color: var(--danger-line);
+        background: linear-gradient(180deg, #fff8f6 0%, #fffdf8 100%);
+      }
       .status {
         display: inline-block;
         padding: 4px 10px;
@@ -76,6 +89,10 @@ export function renderDashboard(input: {
         display: grid;
         gap: 10px;
       }
+      .stack {
+        display: grid;
+        gap: 12px;
+      }
       button, input {
         border-radius: 12px;
         border: 1px solid var(--line);
@@ -87,9 +104,24 @@ export function renderDashboard(input: {
         color: white;
         cursor: pointer;
       }
+      button:hover:not(:disabled) {
+        background: var(--accent-strong);
+      }
       button.secondary {
         background: white;
         color: var(--ink);
+      }
+      button.danger {
+        background: var(--danger);
+        border-color: var(--danger);
+      }
+      button.danger.secondary {
+        background: white;
+        color: var(--danger);
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
       }
       table {
         width: 100%;
@@ -108,8 +140,28 @@ export function renderDashboard(input: {
         margin-bottom: 16px;
         padding: 12px 14px;
         border-radius: 12px;
-        background: #eef6ff;
-        border: 1px solid #d0e3ff;
+      }
+      .message.success {
+        background: var(--success-bg);
+        border: 1px solid var(--success-line);
+      }
+      .message.error {
+        background: var(--danger-bg);
+        border: 1px solid var(--danger-line);
+      }
+      .danger-list {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+      }
+      .danger-list li + li {
+        margin-top: 6px;
+      }
+      .inline-note {
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: #faf7f1;
+        border: 1px solid var(--line);
       }
       @media (max-width: 720px) {
         table, thead, tbody, th, td, tr { display: block; }
@@ -124,13 +176,13 @@ export function renderDashboard(input: {
         <small class="muted">Spotify 좋아요 목록 -> YouTube 공유 재생목록</small>
         <h1 style="margin:0;">Spotify Likes Sync 대시보드</h1>
         <p style="margin:0;max-width:680px;" class="muted">
-          두 계정을 연결하면 1시간마다 YouTube 재생목록을 자동으로 동기화하고, 필요한 곡만 수동으로 보정할 수 있습니다.
+          두 계정을 연결하면 1시간마다 YouTube 재생목록으로 동기화하고, 확인이 필요한 곡만 수동으로 보정할 수 있습니다.
         </p>
       </section>
-      ${input.message ? `<div class="message">${escapeHtml(input.message)}</div>` : ""}
+      ${input.message ? `<div class="message ${input.messageLevel === "error" ? "error" : "success"}">${escapeHtml(input.message)}</div>` : ""}
       <section class="grid">
         <article class="panel">
-          <h2 style="margin-top:0;">연결 상태</h2>
+          <h2 style="margin-top:0;">Spotify 연결 상태</h2>
           <p>
             <span class="status ${spotifyAccount && !spotifyAccount.invalidatedAt ? "" : "warn"}">
               Spotify ${spotifyAccount && !spotifyAccount.invalidatedAt ? "연결됨" : "설정 필요"}
@@ -140,10 +192,13 @@ export function renderDashboard(input: {
           ${spotifyAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(spotifyAccount.lastRefreshError)}</p>` : ""}
           <div class="actions">
             <a href="/auth/spotify/start"><button type="button">Spotify 연결</button></a>
+            <form method="post" action="/admin/connections/spotify/disconnect" data-confirm-message="Spotify 연결을 해제할까요? 저장된 Spotify 토큰과 계정 정보가 제거되며, 다시 연결하기 전까지 동기화가 중단됩니다.">
+              <button type="submit" class="danger secondary" data-loading-label="해제 중...">Spotify 연결 해제</button>
+            </form>
           </div>
         </article>
         <article class="panel">
-          <h2 style="margin-top:0;">YouTube</h2>
+          <h2 style="margin-top:0;">YouTube 연결 상태</h2>
           <p>
             <span class="status ${youtubeAccount && !youtubeAccount.invalidatedAt ? "" : "warn"}">
               YouTube ${youtubeAccount && !youtubeAccount.invalidatedAt ? "연결됨" : "설정 필요"}
@@ -153,10 +208,13 @@ export function renderDashboard(input: {
           ${youtubeAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(youtubeAccount.lastRefreshError)}</p>` : ""}
           <div class="actions">
             <a href="/auth/youtube/start"><button type="button">YouTube 연결</button></a>
+            <form method="post" action="/admin/connections/youtube/disconnect" data-confirm-message="YouTube 연결을 해제할까요? 저장된 YouTube 토큰과 관리 중인 재생목록 상태가 초기화됩니다.">
+              <button type="submit" class="danger secondary" data-loading-label="해제 중...">YouTube 연결 해제</button>
+            </form>
           </div>
         </article>
         <article class="panel">
-          <h2 style="margin-top:0;">재생목록</h2>
+          <h2 style="margin-top:0;">재생목록과 동기화</h2>
           <p class="muted">관리 중인 재생목록 ID</p>
           <p style="font-weight:700;">${input.summary.playlistId ? escapeHtml(input.summary.playlistId) : "첫 동기화 시 자동 생성됩니다"}</p>
           ${
@@ -165,9 +223,27 @@ export function renderDashboard(input: {
               : ""
           }
           <form method="post" action="/admin/sync">
-            <button type="submit">지금 동기화 실행</button>
+            <button type="submit" ${canRunSync ? "" : "disabled"} data-loading-label="동기화 중...">지금 동기화 실행</button>
           </form>
+          ${
+            canRunSync
+              ? `<p class="muted">두 계정이 모두 연결되어 있으므로 수동 동기화를 바로 실행할 수 있습니다.</p>`
+              : `<div class="inline-note"><strong>동기화 대기 중</strong><br /><small>Spotify와 YouTube를 모두 연결해야 동기화를 실행할 수 있습니다.</small></div>`
+          }
         </article>
+      </section>
+      <section class="panel danger" style="margin-top:16px;">
+        <h2 style="margin-top:0;">위험 작업</h2>
+        <p class="muted">실수 방지를 위해 브라우저 확인창을 거친 뒤 실행됩니다. 전체 초기화는 되돌릴 수 없습니다.</p>
+        <ul class="danger-list">
+          <li>전체 초기화는 Spotify/YouTube 토큰, 계정 정보, 재생목록 ID, 곡 매핑, 실패 이력, 동기화 로그까지 모두 지웁니다.</li>
+          <li>YouTube 연결 해제는 YouTube 계정 상태와 재생목록 귀속 정보만 지우고, 곡 검색 결과와 수동 매핑은 유지합니다.</li>
+          <li>Spotify 연결 해제는 Spotify 계정 상태만 지우며, YouTube 상태와 기존 이력은 유지합니다.</li>
+        </ul>
+        <form method="post" action="/admin/reset" data-prompt-text="전체 초기화를 진행하려면 RESET을 입력하세요." data-confirm-message="정말 전체 초기화를 진행할까요? 저장된 프로젝트 상태가 모두 삭제됩니다.">
+          <input type="hidden" name="confirmationText" value="" />
+          <button type="submit" class="danger" data-loading-label="초기화 중...">전체 초기화</button>
+        </form>
       </section>
       <section class="panel" style="margin-top:16px;">
         <h2 style="margin-top:0;">최근 동기화 실행 내역</h2>
@@ -216,7 +292,7 @@ export function renderDashboard(input: {
                         <td>
                           <form method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/override">
                             <input name="videoInput" value="${escapeHtml(track.manualVideoId ?? track.matchedVideoId ?? "")}" placeholder="YouTube URL 또는 video ID" />
-                            <button type="submit" class="secondary">수동 지정 저장</button>
+                            <button type="submit" class="secondary" data-loading-label="저장 중...">수동 지정 저장</button>
                           </form>
                         </td>
                       </tr>`,
@@ -227,6 +303,47 @@ export function renderDashboard(input: {
         </table>
       </section>
     </main>
+    <script>
+      document.addEventListener("submit", function (event) {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) {
+          return;
+        }
+
+        const confirmMessage = form.dataset.confirmMessage;
+        if (confirmMessage && !window.confirm(confirmMessage)) {
+          event.preventDefault();
+          return;
+        }
+
+        const promptText = form.dataset.promptText;
+        if (promptText) {
+          const answer = window.prompt(promptText, "");
+          if (answer === null) {
+            event.preventDefault();
+            return;
+          }
+
+          const confirmationInput = form.querySelector('input[name="confirmationText"]');
+          if (confirmationInput instanceof HTMLInputElement) {
+            confirmationInput.value = answer;
+          }
+        }
+
+        const submitter = event.submitter instanceof HTMLButtonElement
+          ? event.submitter
+          : form.querySelector('button[type="submit"]');
+        const buttons = form.querySelectorAll("button");
+        buttons.forEach((button) => {
+          button.disabled = true;
+        });
+
+        if (submitter instanceof HTMLButtonElement) {
+          submitter.dataset.originalLabel = submitter.textContent || "";
+          submitter.textContent = submitter.dataset.loadingLabel || "처리 중...";
+        }
+      });
+    </script>
   </body>
 </html>`;
 }

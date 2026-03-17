@@ -8,6 +8,7 @@ import { runMigrations } from "./db/migrate.js";
 import { AppStore } from "./db/store.js";
 import { YouTubeSearchService } from "./providers/search/youtube-search.js";
 import { registerRoutes } from "./routes/index.js";
+import { AccountManagementService } from "./services/account-management-service.js";
 import { OAuthService } from "./services/oauth-service.js";
 import { QuotaService } from "./services/quota-service.js";
 import { SyncService } from "./services/sync/sync-service.js";
@@ -18,6 +19,7 @@ export interface AppContext {
   oauthService: OAuthService;
   quotaService: QuotaService;
   syncService: SyncService;
+  accountManagementService: AccountManagementService;
 }
 
 export async function buildApp() {
@@ -25,7 +27,7 @@ export async function buildApp() {
   const database = createDatabase(config.DATABASE_PATH);
   runMigrations(database.sqlite, "drizzle");
   const store = new AppStore(database);
-  const quotaService = new QuotaService(store);
+  const quotaService = new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT);
   const oauthService = new OAuthService(config, store);
   const youtubeSearchService = new YouTubeSearchService(
     config,
@@ -39,6 +41,7 @@ export async function buildApp() {
     quotaService,
     youtubeSearchService,
   );
+  const accountManagementService = new AccountManagementService(config, store);
 
   const app = fastify({
     logger: {
@@ -70,6 +73,7 @@ export async function buildApp() {
     oauthService,
     quotaService,
     syncService,
+    accountManagementService,
   };
 
   app.get("/health", async () => ({
