@@ -84,7 +84,7 @@ describe("SyncService", () => {
     await close();
   });
 
-  it("returns quota_exhausted instead of throwing when insertion quota runs out", async () => {
+  it("pauses for YouTube quota instead of failing when insertion quota runs out", async () => {
     const { store, close } = await createTestStore();
 
     const config = createTestConfig({
@@ -158,7 +158,7 @@ describe("SyncService", () => {
 
     const result = await syncService.run("manual");
 
-    expect(result.status).toBe("quota_exhausted");
+    expect(result.status).toBe("waiting_for_youtube_quota");
     expect(result.error).toContain("playlist insertion");
     expect(result.stats.quotaAbort).toBe(true);
     expect(result.stats.insertedTracks).toBe(0);
@@ -172,8 +172,9 @@ describe("SyncService", () => {
           .where(eq(syncRuns.id, result.runId))
           .limit(1)
       )[0] ?? null;
-    expect(run?.status).toBe("quota_exhausted");
-    expect(run?.errorSummary).toContain("playlist insertion");
+    expect(run?.status).toBe("waiting_for_youtube_quota");
+    expect(run?.lastErrorSummary).toContain("playlist insertion");
+    expect(run?.nextRetryAt).toBeTypeOf("number");
 
     await close();
   });
@@ -253,7 +254,7 @@ describe("SyncService", () => {
     const result = await syncService.run("manual");
     const track = await store.getTrackBySpotifyId("spotify-track-review");
 
-    expect(result.status).toBe("success");
+    expect(result.status).toBe("partially_completed");
     expect(result.stats.insertedTracks).toBe(0);
     expect(result.stats.reviewRequiredCount).toBe(1);
     expect(insertPlaylistItem).not.toHaveBeenCalled();

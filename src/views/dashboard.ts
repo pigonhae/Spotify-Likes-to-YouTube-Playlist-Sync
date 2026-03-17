@@ -2,8 +2,13 @@ import { escapeHtml } from "../lib/strings.js";
 import type { SyncStats } from "../types.js";
 
 type MessageLevel = "success" | "error";
-
-type DashboardSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>>;
+type DashboardLiveSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardLiveData"]>>;
+type DashboardSummary = Omit<DashboardLiveSummary, "activeRun" | "activeRunUpdatedAt" | "activeRunTracks" | "activeRunEvents"> & {
+  activeRun?: DashboardLiveSummary["activeRun"] | null;
+  activeRunUpdatedAt?: DashboardLiveSummary["activeRunUpdatedAt"] | null;
+  activeRunTracks?: DashboardLiveSummary["activeRunTracks"];
+  activeRunEvents?: DashboardLiveSummary["activeRunEvents"];
+};
 type DashboardRun = DashboardSummary["recentRuns"][number];
 type DashboardAttentionTrack = DashboardSummary["attentionTracks"][number];
 
@@ -22,886 +27,155 @@ export function renderDashboard(input: {
   const youtubeAccount = input.accounts.find((account) => account.provider === "youtube");
   const isSpotifyConnected = input.summary.spotifyConnected === true;
   const isYouTubeConnected = input.summary.youtubeConnected === true;
-  const hasConnectedProvider = isSpotifyConnected || isYouTubeConnected;
   const canRunSync = isSpotifyConnected && isYouTubeConnected;
-  const reviewTracks = input.summary.attentionTracks.filter(
-    (track: DashboardAttentionTrack) => track.searchStatus === "review_required",
-  );
-  const otherAttentionTracks = input.summary.attentionTracks.filter(
-    (track: DashboardAttentionTrack) => track.searchStatus !== "review_required",
-  );
+  const reviewTracks = input.summary.attentionTracks.filter((track: DashboardAttentionTrack) => track.searchStatus === "review_required");
+  const otherAttentionTracks = input.summary.attentionTracks.filter((track: DashboardAttentionTrack) => track.searchStatus !== "review_required");
 
   return `<!doctype html>
 <html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Spotify Likes Sync</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #f6f3eb;
-        --panel: #fffdf8;
-        --ink: #1f1d1a;
-        --muted: #6f675d;
-        --line: #ded7cb;
-        --accent: #0d7c66;
-        --accent-strong: #0a6856;
-        --danger: #b93a32;
-        --danger-bg: #fff3f1;
-        --danger-line: #f0b7b1;
-        --success-bg: #eef8f4;
-        --success-line: #b7dccd;
-        --soft-bg: #faf7f1;
-      }
-      * { box-sizing: border-box; }
-      html, body {
-        max-width: 100%;
-        overflow-x: hidden;
-      }
-      body {
-        margin: 0;
-        font-family: "Segoe UI", sans-serif;
-        background: radial-gradient(circle at top, #fff8e7, var(--bg) 50%);
-        color: var(--ink);
-      }
-      main {
-        max-width: 1080px;
-        margin: 0 auto;
-        padding: 32px 20px 56px;
-        min-width: 0;
-      }
-      .hero {
-        display: grid;
-        gap: 12px;
-        margin-bottom: 24px;
-        min-width: 0;
-      }
-      .grid {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        min-width: 0;
-      }
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        padding: 18px;
-        box-shadow: 0 10px 35px rgba(60, 45, 20, 0.06);
-        min-width: 0;
-        overflow: hidden;
-      }
-      .panel.danger {
-        border-color: var(--danger-line);
-        background: linear-gradient(180deg, #fff8f6 0%, #fffdf8 100%);
-      }
-      .status {
-        display: inline-block;
-        padding: 4px 10px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        background: #ebf6f2;
-        color: var(--accent);
-      }
-      .status.warn {
-        background: #fff0ef;
-        color: var(--danger);
-      }
-      form, .actions {
-        display: grid;
-        gap: 10px;
-      }
-      button, input {
-        border-radius: 12px;
-        border: 1px solid var(--line);
-        padding: 10px 12px;
-        font: inherit;
-      }
-      button {
-        background: var(--accent);
-        color: white;
-        cursor: pointer;
-      }
-      button:hover:not(:disabled) {
-        background: var(--accent-strong);
-      }
-      button.secondary {
-        background: white;
-        color: var(--ink);
-      }
-      button.danger {
-        background: var(--danger);
-        border-color: var(--danger);
-      }
-      button.danger.secondary {
-        background: white;
-        color: var(--danger);
-      }
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.55;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th, td {
-        text-align: left;
-        padding: 10px 0;
-        border-bottom: 1px solid var(--line);
-        vertical-align: top;
-        min-width: 0;
-      }
-      small, .muted {
-        color: var(--muted);
-      }
-      .message {
-        margin-bottom: 16px;
-        padding: 12px 14px;
-        border-radius: 12px;
-      }
-      .message.success {
-        background: var(--success-bg);
-        border: 1px solid var(--success-line);
-      }
-      .message.error {
-        background: var(--danger-bg);
-        border: 1px solid var(--danger-line);
-      }
-      .danger-list {
-        margin: 0;
-        padding-left: 18px;
-        color: var(--muted);
-      }
-      .danger-list li + li {
-        margin-top: 6px;
-      }
-      .inline-note {
-        padding: 12px 14px;
-        border-radius: 12px;
-        background: #faf7f1;
-        border: 1px solid var(--line);
-      }
-      .runs {
-        display: grid;
-        gap: 12px;
-        min-width: 0;
-      }
-      .run-card {
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 14px;
-        background: rgba(255, 255, 255, 0.68);
-        min-width: 0;
-        overflow: hidden;
-      }
-      .run-card-head {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: start;
-        min-width: 0;
-      }
-      .run-card-head > div {
-        min-width: 0;
-      }
-      .run-meta {
-        display: grid;
-        gap: 8px;
-        margin-top: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        min-width: 0;
-      }
-      .run-meta-item {
-        min-width: 0;
-      }
-      .run-meta-label {
-        display: block;
-        margin-bottom: 4px;
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-      }
-      .run-meta-value {
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .run-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        min-width: 0;
-      }
-      .run-tag {
-        display: inline-flex;
-        align-items: center;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: #f4efe5;
-        color: var(--ink);
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .run-tag.error {
-        background: #fff0ef;
-        color: var(--danger);
-      }
-      .run-details {
-        margin-top: 12px;
-        display: grid;
-        gap: 10px;
-        min-width: 0;
-      }
-      .run-disclosure {
-        min-width: 0;
-      }
-      .run-disclosure summary {
-        cursor: pointer;
-        font-weight: 700;
-        color: var(--ink);
-      }
-      .run-disclosure summary::-webkit-details-marker {
-        display: none;
-      }
-      .run-disclosure summary::before {
-        content: "▸";
-        display: inline-block;
-        margin-right: 6px;
-      }
-      .run-disclosure[open] summary::before {
-        content: "▾";
-      }
-      .run-log {
-        margin-top: 10px;
-        padding: 12px;
-        border-radius: 12px;
-        background: var(--soft-bg);
-        border: 1px solid var(--line);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 12px;
-        line-height: 1.55;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-        max-width: 100%;
-        max-height: 260px;
-        overflow: auto;
-      }
-      .run-empty {
-        color: var(--muted);
-      }
-      .attention-group + .attention-group {
-        margin-top: 18px;
-        padding-top: 18px;
-        border-top: 1px solid var(--line);
-      }
-      .attention-heading {
-        margin: 0 0 12px;
-        font-size: 14px;
-        color: var(--muted);
-      }
-      .attention-list {
-        display: grid;
-        gap: 12px;
-        min-width: 0;
-      }
-      .attention-card {
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 14px;
-        background: rgba(255, 255, 255, 0.7);
-        min-width: 0;
-        overflow: hidden;
-      }
-      .attention-card.review-card {
-        background: linear-gradient(180deg, #fffaf3 0%, rgba(255, 255, 255, 0.92) 100%);
-      }
-      .attention-head {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: start;
-        min-width: 0;
-      }
-      .attention-head > div {
-        min-width: 0;
-      }
-      .attention-title {
-        margin: 0;
-        font-size: 16px;
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .attention-subtitle,
-      .attention-note,
-      .attention-link,
-      .attention-error,
-      .video-meta,
-      .video-title,
-      .video-channel,
-      .manual-current {
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .attention-subtitle {
-        margin-top: 4px;
-        color: var(--muted);
-      }
-      .attention-status-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        min-width: 0;
-      }
-      .score-pill {
-        display: inline-flex;
-        align-items: center;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: #f4efe5;
-        color: var(--ink);
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .attention-body {
-        display: grid;
-        gap: 12px;
-        margin-top: 12px;
-        min-width: 0;
-      }
-      .video-card {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: minmax(0, 168px) minmax(0, 1fr);
-        padding: 12px;
-        border-radius: 14px;
-        border: 1px solid var(--line);
-        background: var(--soft-bg);
-        min-width: 0;
-      }
-      .video-thumb {
-        display: block;
-        min-width: 0;
-        max-width: 168px;
-        width: 100%;
-      }
-      .video-thumb img {
-        display: block;
-        width: 100%;
-        aspect-ratio: 16 / 9;
-        object-fit: cover;
-        border-radius: 12px;
-        border: 1px solid var(--line);
-        background: #ece5d8;
-      }
-      .video-text {
-        display: grid;
-        gap: 8px;
-        min-width: 0;
-      }
-      .video-title {
-        font-weight: 700;
-      }
-      .video-channel,
-      .video-meta {
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .reason-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        min-width: 0;
-      }
-      .reason-pill {
-        display: inline-flex;
-        align-items: center;
-        max-width: 100%;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: white;
-        border: 1px solid var(--line);
-        font-size: 12px;
-      }
-      .review-actions,
-      .attention-actions,
-      .manual-form {
-        display: grid;
-        gap: 10px;
-        min-width: 0;
-      }
-      .manual-form-row {
-        display: grid;
-        gap: 10px;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: start;
-        min-width: 0;
-      }
-      .manual-form-row input {
-        min-width: 0;
-        width: 100%;
-      }
-      .manual-disclosure,
-      .manual-disclosure[open] {
-        min-width: 0;
-      }
-      .manual-disclosure summary {
-        cursor: pointer;
-        font-weight: 700;
-      }
-      .manual-disclosure summary::-webkit-details-marker {
-        display: none;
-      }
-      .manual-disclosure summary::before {
-        content: "▸";
-        display: inline-block;
-        margin-right: 6px;
-      }
-      .manual-disclosure[open] summary::before {
-        content: "▾";
-      }
-      .manual-panel {
-        margin-top: 10px;
-        padding-top: 10px;
-        border-top: 1px dashed var(--line);
-        min-width: 0;
-      }
-      .manual-current {
-        font-size: 13px;
-        color: var(--muted);
-      }
-      .attention-note {
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .attention-error {
-        color: var(--danger);
-        font-size: 13px;
-      }
-      @media (max-width: 720px) {
-        table, thead, tbody, th, td, tr { display: block; }
-        th { display: none; }
-        td { padding: 8px 0; }
-        .run-card-head {
-          grid-template-columns: 1fr;
-        }
-        .attention-head,
-        .video-card,
-        .manual-form-row {
-          grid-template-columns: 1fr;
-        }
-        .video-thumb {
-          max-width: none;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <section class="hero">
-        <small class="muted">Spotify 좋아요 목록 -> YouTube 공유 재생목록</small>
-        <h1 style="margin:0;">Spotify Likes Sync 대시보드</h1>
-        <p style="margin:0;max-width:680px;" class="muted">
-          두 계정을 연결하면 1시간마다 YouTube 재생목록으로 동기화하고, 확인이 필요한 곡만 수동으로 보정할 수 있습니다.
-        </p>
-      </section>
-      ${input.message ? `<div class="message ${input.messageLevel === "error" ? "error" : "success"}">${escapeHtml(input.message)}</div>` : ""}
-      <section class="grid">
-        <article class="panel">
-          <h2 style="margin-top:0;">Spotify 연결 상태</h2>
-          <p>
-            <span class="status ${isSpotifyConnected ? "" : "warn"}">
-              Spotify ${isSpotifyConnected ? "연결됨" : "설정 필요"}
-            </span>
-          </p>
-          <p class="muted">${escapeHtml(spotifyAccount?.externalDisplayName ?? "연결되지 않음")}</p>
-          ${spotifyAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(spotifyAccount.lastRefreshError)}</p>` : ""}
-          <div class="actions">
-            <a href="/auth/spotify/start"><button type="button">Spotify 연결</button></a>
-            ${
-              isSpotifyConnected
-                ? `<form method="post" action="/admin/connections/spotify/disconnect" data-confirm-message="Spotify 연결을 해제할까요? 저장된 Spotify 토큰과 계정 정보가 제거되며, 다시 연결하기 전까지 동기화가 중단됩니다.">
-                    <button type="submit" class="danger secondary" data-loading-label="해제 중...">Spotify 연결 해제</button>
-                  </form>`
-                : ""
-            }
-          </div>
-        </article>
-        <article class="panel">
-          <h2 style="margin-top:0;">YouTube 연결 상태</h2>
-          <p>
-            <span class="status ${isYouTubeConnected ? "" : "warn"}">
-              YouTube ${isYouTubeConnected ? "연결됨" : "설정 필요"}
-            </span>
-          </p>
-          <p class="muted">${escapeHtml(youtubeAccount?.externalDisplayName ?? "연결되지 않음")}</p>
-          ${youtubeAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(youtubeAccount.lastRefreshError)}</p>` : ""}
-          <div class="actions">
-            <a href="/auth/youtube/start"><button type="button">YouTube 연결</button></a>
-            ${
-              isYouTubeConnected
-                ? `<form method="post" action="/admin/connections/youtube/disconnect" data-confirm-message="YouTube 연결을 해제할까요? 저장된 YouTube 토큰과 관리 중인 재생목록 상태가 초기화됩니다.">
-                    <button type="submit" class="danger secondary" data-loading-label="해제 중...">YouTube 연결 해제</button>
-                  </form>`
-                : ""
-            }
-          </div>
-        </article>
-        <article class="panel">
-          <h2 style="margin-top:0;">재생목록과 동기화</h2>
-          <p class="muted">관리 중인 재생목록 ID</p>
-          <p style="font-weight:700;">${input.summary.playlistId ? escapeHtml(input.summary.playlistId) : "첫 동기화 시 자동 생성됩니다"}</p>
-          ${
-            input.summary.playlistId
-              ? `<p><a href="https://www.youtube.com/playlist?list=${escapeHtml(input.summary.playlistId)}" target="_blank" rel="noreferrer">재생목록 열기</a></p>`
-              : ""
-          }
-          <form method="post" action="/admin/sync">
-            <button type="submit" ${canRunSync ? "" : "disabled"} data-loading-label="동기화 중...">지금 동기화 실행</button>
-          </form>
-          ${
-            canRunSync
-              ? `<p class="muted">두 계정이 모두 연결되어 있으므로 수동 동기화를 바로 실행할 수 있습니다.</p>`
-              : `<div class="inline-note"><strong>동기화 대기 중</strong><br /><small>Spotify와 YouTube를 모두 연결해야 동기화를 실행할 수 있습니다.</small></div>`
-          }
-        </article>
-      </section>
-      ${
-        hasConnectedProvider
-          ? `<section class="panel danger" style="margin-top:16px;">
-              <h2 style="margin-top:0;">위험 작업</h2>
-              <p class="muted">실수 방지를 위해 브라우저 확인창을 거친 뒤 실행됩니다. 전체 초기화는 되돌릴 수 없습니다.</p>
-              <ul class="danger-list">
-                <li>전체 초기화는 Spotify/YouTube 토큰, 계정 정보, 재생목록 ID, 곡 매핑, 실패 이력, 동기화 로그까지 모두 지웁니다.</li>
-                <li>YouTube 연결 해제는 YouTube 계정 상태와 재생목록 귀속 정보만 지우고, 곡 검색 결과와 수동 매핑은 유지합니다.</li>
-                <li>Spotify 연결 해제는 Spotify 계정 상태만 지우며, YouTube 상태와 기존 이력은 유지합니다.</li>
-              </ul>
-              <form method="post" action="/admin/reset" data-prompt-text="전체 초기화를 진행하려면 RESET을 입력하세요." data-confirm-message="정말 전체 초기화를 진행할까요? 저장된 프로젝트 상태가 모두 삭제됩니다.">
-                <input type="hidden" name="confirmationText" value="" />
-                <button type="submit" class="danger" data-loading-label="초기화 중...">전체 초기화</button>
-              </form>
-            </section>`
-          : ""
-      }
-      <section class="panel" style="margin-top:16px;">
-        <h2 style="margin-top:0;">최근 동기화 실행 내역</h2>
-        <div class="runs">
-          ${
-            input.summary.recentRuns.length === 0
-              ? `<p class="run-empty">아직 동기화 실행 내역이 없습니다.</p>`
-              : input.summary.recentRuns.map((run: DashboardRun) => renderRunCard(run)).join("")
-          }
-        </div>
-      </section>
-      <section class="panel" style="margin-top:16px;">
-        <h2 style="margin-top:0;">확인이 필요한 곡</h2>
-        ${
-          input.summary.attentionTracks.length === 0
-            ? `<p class="run-empty">지금은 수동 확인이 필요한 곡이 없습니다.</p>`
-            : `
-                ${
-                  reviewTracks.length > 0
-                    ? `<section class="attention-group">
-                        <h3 class="attention-heading">검토가 필요한 추천 후보</h3>
-                        <div class="attention-list">
-                          ${reviewTracks.map((track: DashboardAttentionTrack) => renderReviewTrackCard(track)).join("")}
-                        </div>
-                      </section>`
-                    : ""
-                }
-                ${
-                  otherAttentionTracks.length > 0
-                    ? `<section class="attention-group">
-                        <h3 class="attention-heading">직접 확인하거나 다시 시도할 곡</h3>
-                        <div class="attention-list">
-                          ${otherAttentionTracks.map((track: DashboardAttentionTrack) => renderAttentionTrackCard(track)).join("")}
-                        </div>
-                      </section>`
-                    : ""
-                }
-              `
-        }
-      </section>
-    </main>
-    <script>
-      document.addEventListener("submit", function (event) {
-        const form = event.target;
-        if (!(form instanceof HTMLFormElement)) {
-          return;
-        }
-
-        const confirmMessage = form.dataset.confirmMessage;
-        if (confirmMessage && !window.confirm(confirmMessage)) {
-          event.preventDefault();
-          return;
-        }
-
-        const promptText = form.dataset.promptText;
-        if (promptText) {
-          const answer = window.prompt(promptText, "");
-          if (answer === null) {
-            event.preventDefault();
-            return;
-          }
-
-          const confirmationInput = form.querySelector('input[name="confirmationText"]');
-          if (confirmationInput instanceof HTMLInputElement) {
-            confirmationInput.value = answer;
-          }
-        }
-
-        const submitter = event.submitter instanceof HTMLButtonElement
-          ? event.submitter
-          : form.querySelector('button[type="submit"]');
-        const buttons = form.querySelectorAll("button");
-        buttons.forEach((button) => {
-          button.disabled = true;
-        });
-
-        if (submitter instanceof HTMLButtonElement) {
-          submitter.dataset.originalLabel = submitter.textContent || "";
-          submitter.textContent = submitter.dataset.loadingLabel || "처리 중...";
-        }
-      });
-    </script>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spotify Likes Sync</title>
+  <style>${baseStyles()}</style>
+</head>
+<body>
+  <main>
+    <section class="stack" style="margin-bottom:16px;">
+      <small class="muted">Spotify liked songs -> YouTube playlist sync</small>
+      <h1 style="margin:0;">Spotify Likes Sync Dashboard</h1>
+      <p class="note" style="margin:0;max-width:760px;">Run state is stored in PostgreSQL and refreshed with polling. Long titles, errors, and JSON stay wrapped or scroll internally so the layout does not break.</p>
+    </section>
+    ${input.message ? `<div class="message ${input.messageLevel === "error" ? "error" : "success"}">${escapeHtml(input.message)}</div>` : ""}
+    <section class="grid">
+      ${renderConnectionPanel("Spotify", isSpotifyConnected, spotifyAccount, "/auth/spotify/start", "/admin/connections/spotify/disconnect", "Disconnect Spotify and pause future sync work?")}
+      ${renderConnectionPanel("YouTube", isYouTubeConnected, youtubeAccount, "/auth/youtube/start", "/admin/connections/youtube/disconnect", "Disconnect YouTube and clear managed playlist ownership state?")}
+      ${renderSyncPanel(input.summary.playlistId, canRunSync)}
+    </section>
+    <section class="panel live" style="margin-top:16px;"><div id="live-sync-root">${renderLiveSection(input.summary)}</div></section>
+    <section class="panel" style="margin-top:16px;"><h2 style="margin-top:0;">Recent Runs</h2><div class="runs" id="recent-runs-root">${renderRecentRuns(input.summary.recentRuns)}</div></section>
+    <section class="panel" style="margin-top:16px;">
+      <h2 style="margin-top:0;">Tracks Needing Attention</h2>
+      ${input.summary.attentionTracks.length === 0 ? `<p class="muted">There are no tracks that currently need manual attention.</p>` : `${reviewTracks.length > 0 ? `<section style="margin-bottom:18px;"><h3 class="muted" style="margin:0 0 12px;">Review required</h3><div class="attention-list">${reviewTracks.map((track: DashboardAttentionTrack) => renderReviewTrackCard(track)).join("")}</div></section>` : ""}${otherAttentionTracks.length > 0 ? `<section><h3 class="muted" style="margin:0 0 12px;">Retry or confirm manually</h3><div class="attention-list">${otherAttentionTracks.map((track: DashboardAttentionTrack) => renderAttentionTrackCard(track)).join("")}</div></section>` : ""}`}
+    </section>
+    <section class="panel danger-zone" style="margin-top:16px;">
+      <h2 style="margin-top:0;">Danger Zone</h2>
+      <p class="note" style="margin-top:0;">Use this only when you intentionally want to wipe saved tokens, run history, cached mappings, playlist ownership, and sync progress.</p>
+      <form method="post" action="/admin/reset" data-prompt-text="Type RESET to confirm a full reset.">
+        <input type="hidden" name="confirmationText" value="" />
+        <button type="submit" class="danger" data-loading-label="Resetting...">Reset all project state</button>
+      </form>
+    </section>
+  </main>
+  <script id="dashboard-live-data" type="application/json">${escapeHtml(JSON.stringify(input.summary))}</script>
+  <script>${clientScript()}</script>
+</body>
 </html>`;
+}
+
+function baseStyles() {
+  return `
+    :root{--bg:#f6f3eb;--panel:#fffdf8;--ink:#1f1d1a;--muted:#6f675d;--line:#ded7cb;--accent:#0d7c66;--warn:#b86d1f;--danger:#b93a32}
+    *{box-sizing:border-box} html,body{max-width:100%;overflow-x:hidden} body{margin:0;font-family:"Segoe UI",sans-serif;background:radial-gradient(circle at top,#fff8e7,var(--bg) 50%);color:var(--ink)}
+    main{max-width:1120px;margin:0 auto;padding:32px 20px 56px;min-width:0} .grid,.runs,.attention-list,.stack,.live-board,.track-list,.event-list{display:grid;gap:12px;min-width:0}
+    .grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))} .live-board{grid-template-columns:minmax(0,1.02fr) minmax(0,1fr)}
+    .panel,.run-card,.attention-card,.track-row,.event-row{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;min-width:0;overflow:hidden;box-shadow:0 10px 35px rgba(60,45,20,.06)}
+    .attention-card.review-card{background:linear-gradient(180deg,#fffaf3 0%,rgba(255,255,255,.94) 100%)} .panel.live{background:linear-gradient(180deg,#fffef9 0%,#fffaf2 100%)} .danger-zone{border-color:#efc3bf;background:linear-gradient(180deg,#fff8f7 0%,rgba(255,255,255,.95) 100%)}
+    .status,.tag,.pill{display:inline-flex;align-items:center;max-width:100%;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;overflow-wrap:anywhere;word-break:break-word}
+    .status{background:#ebf6f2;color:var(--accent)} .status.warn{background:#fff4e8;color:var(--warn)} .status.error{background:#fff0ef;color:var(--danger)} .tag,.pill{background:#f4efe5;color:var(--ink)}
+    .message{margin-bottom:16px;padding:12px 14px;border-radius:12px}.message.success{background:#eef8f4;border:1px solid #b7dccd}.message.error{background:#fff3f1;border:1px solid #f0b7b1}
+    form,.actions,.manual-form{display:grid;gap:10px;min-width:0} button,input,select{border-radius:12px;border:1px solid var(--line);padding:10px 12px;font:inherit}
+    button{background:var(--accent);color:#fff;cursor:pointer} button.secondary{background:#fff;color:var(--ink)} button.danger{background:var(--danger);border-color:var(--danger)} button.danger.secondary{background:#fff;color:var(--danger)} button:disabled{opacity:.55;cursor:not-allowed}
+    .muted,.note{color:var(--muted)} .inline-note,.empty{padding:12px 14px;border-radius:12px;background:#faf7f1;border:1px solid var(--line)}
+    .head,.split{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0} .split>div,.head>div{min-width:0}
+    .meta,.summary-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));min-width:0}
+    .title,.subtitle,.text,.log,.current,.video-title,.video-channel,.video-meta{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+    .log{margin-top:10px;padding:12px;border-radius:12px;background:#faf7f1;border:1px solid var(--line);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto}
+    .video-card{display:grid;gap:12px;grid-template-columns:minmax(0,160px) minmax(0,1fr);padding:12px;border-radius:14px;border:1px solid var(--line);background:#faf7f1}
+    .video-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:12px;border:1px solid var(--line)}
+    .manual-row,.controls{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0}
+    .progress{display:grid;gap:8px}.bar{width:100%;height:10px;border-radius:999px;background:#ede7da;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#0d7c66 0%,#27a77c 100%)}
+    .scroll{max-height:520px;overflow:auto;padding-right:4px}.sticky{position:sticky;top:0;background:linear-gradient(180deg,var(--panel) 78%,rgba(255,253,248,0));padding-bottom:10px;z-index:1}
+    .current-row{border-color:#9cc8ba;background:linear-gradient(180deg,#f6fff8 0%,rgba(255,255,255,.96) 100%)} .chips{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+    @media (max-width:860px){.live-board,.video-card,.head,.split,.manual-row,.controls{grid-template-columns:1fr}} @media (max-width:640px){main{padding-left:14px;padding-right:14px}}
+  `;
+}
+
+function renderConnectionPanel(title: string, connected: boolean, account: { externalDisplayName: string | null; lastRefreshError: string | null } | undefined, connectHref: string, disconnectAction: string, disconnectMessage: string) {
+  return `<article class="panel"><h2 style="margin-top:0;">${escapeHtml(title)}</h2><p><span class="${connected ? "status" : "status warn"}">${escapeHtml(connected ? "Connected" : "Needs setup")}</span></p><p class="muted">${escapeHtml(account?.externalDisplayName ?? "Not connected")}</p>${account?.lastRefreshError ? `<p class="muted">Latest refresh error: ${escapeHtml(account.lastRefreshError)}</p>` : ""}<div class="actions"><a href="${escapeHtml(connectHref)}"><button type="button">${escapeHtml("Connect " + title)}</button></a>${connected ? `<form method="post" action="${escapeHtml(disconnectAction)}" data-confirm-message="${escapeHtml(disconnectMessage)}"><button type="submit" class="danger secondary" data-loading-label="Disconnecting...">${escapeHtml("Disconnect " + title)}</button></form>` : ""}</div></article>`;
+}
+
+function renderSyncPanel(playlistId: string | null, canRunSync: boolean) {
+  return `<article class="panel"><h2 style="margin-top:0;">Playlist And Sync</h2><p class="muted">Managed playlist ID</p><p class="text"><strong>${playlistId ? escapeHtml(playlistId) : "Created automatically on the first successful sync"}</strong></p>${playlistId ? `<p><a href="https://www.youtube.com/playlist?list=${escapeHtml(playlistId)}" target="_blank" rel="noreferrer">Open playlist</a></p>` : ""}<form method="post" action="/admin/sync"><button type="submit" ${canRunSync ? "" : "disabled"} data-loading-label="Starting...">Run sync now</button></form>${canRunSync ? `<p class="note">Both accounts are connected, so a manual run can start immediately.</p>` : `<div class="inline-note"><strong>Waiting for setup</strong><br /><small>Both Spotify and YouTube must be connected before sync can run.</small></div>`}</article>`;
+}
+
+function renderLiveSection(summary: DashboardSummary) {
+  if (!summary.activeRun) {
+    return `<div class="empty">No active or waiting sync run. Start a manual sync or wait for the next scheduled resume.</div>`;
+  }
+  const activeRunTracks = summary.activeRunTracks ?? [];
+  const activeRunEvents = summary.activeRunEvents ?? [];
+  const total = Number(summary.activeRun.totalTracks ?? 0);
+  const completed = Number(summary.activeRun.completedTracks ?? 0);
+  const remaining = Number(summary.activeRun.remainingTracks ?? Math.max(0, total - completed));
+  const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0;
+  return `<div class="stack"><div class="head"><div><div class="chips"><span class="${statusClass(summary.activeRun.status)}">${escapeHtml(formatRunStatus(summary.activeRun.status))}</span><span class="tag">${escapeHtml(summary.activeRun.phase ?? "running")}</span>${summary.activeRun.pauseReason ? `<span class="tag">${escapeHtml(summary.activeRun.pauseReason)}</span>` : ""}</div><h2 style="margin:10px 0 0;">Live Sync Run</h2></div><div class="note">Updated ${escapeHtml(formatDate(summary.activeRunUpdatedAt ?? summary.activeRun.updatedAt ?? summary.activeRun.lastHeartbeatAt ?? summary.activeRun.startedAt))}</div></div><div class="summary-grid"><div><small class="muted">Status</small><div class="text">${escapeHtml(summary.activeRun.statusMessage ?? formatRunStatus(summary.activeRun.status))}</div></div><div><small class="muted">Progress</small><div class="text">${escapeHtml(`${completed} / ${total} complete`)}</div></div><div><small class="muted">Remaining</small><div class="text">${escapeHtml(String(remaining))}</div></div><div><small class="muted">Current track</small><div class="current">${escapeHtml(summary.activeRun.currentTrackName ?? "-")}</div></div><div><small class="muted">Next retry</small><div class="text">${escapeHtml(formatDate(summary.activeRun.nextRetryAt))}</div></div><div><small class="muted">Last error</small><div class="text">${escapeHtml(previewText(summary.activeRun.lastErrorSummary ?? summary.activeRun.errorSummary ?? "-", 200))}</div></div></div><div class="progress"><div class="note">Overall progress</div><div class="bar"><span style="width:${pct}%"></span></div><div class="text">${escapeHtml(`${pct}%`)}</div></div><div class="live-board"><section><div class="sticky"><h3 style="margin:0 0 8px;">Spotify track flow</h3><div class="note">${escapeHtml(activeRunTracks.length === 0 ? "Tracks will appear here as the run progresses." : `Showing ${activeRunTracks.length} track rows`)}</div></div><div class="scroll"><div class="track-list">${activeRunTracks.length === 0 ? `<div class="empty">No active track rows are available yet.</div>` : activeRunTracks.map((track: any) => renderActiveTrackRow(track, summary.activeRun?.currentSpotifyTrackId ?? null)).join("")}</div></div></section><section><div class="sticky"><h3 style="margin:0;">Recent timeline</h3><div class="note">Payload blocks wrap and scroll internally so long JSON and errors never stretch the page.</div></div><div class="scroll"><div class="event-list">${activeRunEvents.length === 0 ? `<div class="empty">No recent timeline entries yet.</div>` : activeRunEvents.map((event: any) => renderEventRow(event)).join("")}</div></div></section></div></div>`;
+}
+
+function renderActiveTrackRow(track: any, currentSpotifyTrackId: string | null) {
+  return `<article class="track-row ${currentSpotifyTrackId === track.spotifyTrackId ? "current-row" : ""}"><div class="head"><div><div class="text"><strong>${escapeHtml(track.trackName)}</strong></div><div class="text muted">${escapeHtml(track.artistNames.join(", "))}</div></div><span class="${statusClass(track.status)}">${escapeHtml(formatTrackStatus(track.status))}</span></div><div class="chips">${track.statusMessage ? `<span class="tag">${escapeHtml(track.statusMessage)}</span>` : ""}${track.matchedVideoTitle ? `<span class="tag">YT: ${escapeHtml(track.matchedVideoTitle)}</span>` : ""}${track.playlistItemId ? `<span class="tag">Inserted</span>` : ""}</div>${track.lastError ? `<details><summary>Track error</summary><div class="log">${escapeHtml(track.lastError)}</div></details>` : ""}</article>`;
+}
+
+function renderEventRow(event: any) {
+  return `<article class="event-row"><div class="head"><div><div class="text"><strong>${escapeHtml(event.message)}</strong></div><div class="text muted">${escapeHtml(event.stage)}</div></div><span class="${statusClass(event.level === "error" ? "failed" : event.level === "warn" ? "waiting_for_youtube_quota" : "running")}">${escapeHtml(String(event.level).toUpperCase())}</span></div><div class="chips"><span class="tag">${escapeHtml(formatDate(event.createdAt))}</span>${event.spotifyTrackId ? `<span class="tag">${escapeHtml(event.spotifyTrackId)}</span>` : ""}</div>${event.payloadJson ? `<details><summary>Payload</summary><div class="log">${formatStructuredLog(event.payloadJson)}</div></details>` : ""}</article>`;
+}
+
+function renderRecentRuns(runs: DashboardRun[]) {
+  return runs.length === 0 ? `<p class="muted">No sync runs yet.</p>` : runs.map((run) => renderRunCard(run)).join("");
 }
 
 function renderRunCard(run: DashboardRun) {
   const parsedStats = safeParseJson(run.statsJson);
-  const statsPreview = formatStatsPreview(parsedStats.value);
-  const statsDetails = formatStructuredLog(parsedStats.value ?? run.statsJson ?? "-");
-  const errorPreview = getPreviewText(run.errorSummary);
-  const errorDetails = formatStructuredLog(run.errorSummary ?? "-");
-
-  return `<article class="run-card">
-    <div class="run-card-head">
-      <div>
-        <div class="run-tags">
-          <span class="status ${run.status === "failed" ? "warn" : ""}">${escapeHtml(formatRunStatus(run.status))}</span>
-          <span class="run-tag">${escapeHtml(formatRunTrigger(run.trigger))}</span>
-        </div>
-      </div>
-      <div class="run-meta-item">
-        <span class="run-meta-label">시작 시각</span>
-        <div class="run-meta-value">${escapeHtml(formatDate(run.startedAt))}</div>
-      </div>
-    </div>
-    <div class="run-meta">
-      <div class="run-meta-item">
-        <span class="run-meta-label">종료 시각</span>
-        <div class="run-meta-value">${escapeHtml(run.finishedAt ? formatDate(run.finishedAt) : "실행 중")}</div>
-      </div>
-      <div class="run-meta-item">
-        <span class="run-meta-label">통계 요약</span>
-        <div class="run-meta-value">${escapeHtml(statsPreview)}</div>
-      </div>
-      <div class="run-meta-item">
-        <span class="run-meta-label">오류 요약</span>
-        <div class="run-meta-value">${escapeHtml(errorPreview)}</div>
-      </div>
-    </div>
-    <div class="run-details">
-      ${run.statsJson ? `<details class="run-disclosure"><summary>통계 상세 보기</summary><div class="run-log">${statsDetails}</div></details>` : ""}
-      ${run.errorSummary ? `<details class="run-disclosure"><summary>오류 상세 보기</summary><div class="run-log">${errorDetails}</div></details>` : ""}
-    </div>
-  </article>`;
+  return `<article class="run-card"><div class="head"><div><div class="chips"><span class="${statusClass(run.status)}">${escapeHtml(formatRunStatus(run.status))}</span><span class="tag">${escapeHtml(run.trigger)}</span></div></div><div><small class="muted">Started</small><div class="text">${escapeHtml(formatDate(run.startedAt))}</div></div></div><div class="meta"><div><small class="muted">Finished</small><div class="text">${escapeHtml(run.finishedAt ? formatDate(run.finishedAt) : "Still active")}</div></div><div><small class="muted">Stats</small><div class="text">${escapeHtml(formatStatsDisplay(parsedStats))}</div></div><div><small class="muted">Error</small><div class="text">${escapeHtml(previewText(run.errorSummary))}</div></div></div><div>${run.statsJson ? `<details><summary>View stats</summary><div class="log">${formatStructuredLog(parsedStats ?? run.statsJson ?? "-")}</div></details>` : ""}${run.errorSummary ? `<details><summary>View error</summary><div class="log">${formatStructuredLog(run.errorSummary ?? "-")}</div></details>` : ""}</div></article>`;
 }
 
 function renderReviewTrackCard(track: DashboardAttentionTrack) {
-  return `<article class="attention-card review-card">
-    <div class="attention-head">
-      <div>
-        <p class="attention-title">${escapeHtml(track.trackName)}</p>
-        <div class="attention-subtitle">${escapeHtml(formatTrackArtists(track))}</div>
-      </div>
-      <div class="attention-status-row">
-        <span class="status warn">${escapeHtml(formatTrackStatus(track.searchStatus))}</span>
-        ${typeof track.reviewScore === "number" ? `<span class="score-pill">추천 점수 ${escapeHtml(String(track.reviewScore))}</span>` : ""}
-      </div>
-    </div>
-    <div class="attention-body">
-      ${track.reviewVideoId ? renderRecommendationCard(track) : `<div class="inline-note attention-note">추천 후보를 자동으로 고르지 못했습니다. 아래에서 직접 YouTube 영상을 입력해 주세요.</div>`}
-      ${track.reviewReasons.length > 0 ? `<div class="reason-list">${track.reviewReasons.slice(0, 4).map((reason: string) => `<span class="reason-pill">${escapeHtml(formatReviewReason(reason))}</span>`).join("")}</div>` : ""}
-      ${track.lastError ? `<div class="attention-error">${escapeHtml(track.lastError)}</div>` : ""}
-      <div class="review-actions">
-        ${
-          track.reviewVideoId
-            ? `<form method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/accept">
-                <button type="submit" data-loading-label="확정 중...">이 영상 사용</button>
-              </form>`
-            : ""
-        }
-        ${renderManualForm(track, {
-          label: "수동 입력하기",
-          open: !track.reviewVideoId,
-          buttonLabel: "수동 지정 저장",
-        })}
-      </div>
-    </div>
-  </article>`;
+  return `<article class="attention-card review-card"><div class="head"><div><p class="title">${escapeHtml(track.trackName)}</p><div class="subtitle muted">${escapeHtml(formatTrackArtists(track))}</div></div><div class="chips"><span class="${statusClass(track.searchStatus)}">${escapeHtml(formatTrackStatus(track.searchStatus))}</span>${typeof track.reviewScore === "number" ? `<span class="pill">Score ${escapeHtml(String(track.reviewScore))}</span>` : ""}</div></div><div class="stack">${track.reviewVideoId ? renderRecommendationCard(track) : `<div class="inline-note">No recommended candidate was preserved for this track. Enter a manual YouTube URL or video ID below.</div>`}${track.reviewReasons.length > 0 ? `<div class="chips">${track.reviewReasons.slice(0, 4).map((reason: string) => `<span class="pill">${escapeHtml(reason)}</span>`).join("")}</div>` : ""}${track.lastError ? `<div class="text" style="color:var(--danger)">${escapeHtml(track.lastError)}</div>` : ""}<div class="actions">${track.reviewVideoId ? `<form method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/accept"><button type="submit" data-loading-label="Saving...">Accept recommendation</button></form>` : ""}${renderManualForm(track, "Enter manual match", !track.reviewVideoId, "Save manual match")}</div></div></article>`;
 }
 
 function renderAttentionTrackCard(track: DashboardAttentionTrack) {
-  const showManualFormOpen = track.searchStatus !== "matched_manual";
   const currentVideoId = track.manualVideoId ?? track.matchedVideoId;
-
-  return `<article class="attention-card">
-    <div class="attention-head">
-      <div>
-        <p class="attention-title">${escapeHtml(track.trackName)}</p>
-        <div class="attention-subtitle">${escapeHtml(formatTrackArtists(track))}</div>
-      </div>
-      <div class="attention-status-row">
-        <span class="status ${track.searchStatus === "failed" || track.searchStatus === "no_match" ? "warn" : ""}">${escapeHtml(formatTrackStatus(track.searchStatus))}</span>
-      </div>
-    </div>
-    <div class="attention-body">
-      ${
-        currentVideoId
-          ? renderResolvedVideo(track, currentVideoId)
-          : `<div class="attention-note">아직 확정된 YouTube 영상이 없습니다.</div>`
-      }
-      ${track.lastError ? `<div class="attention-error">${escapeHtml(track.lastError)}</div>` : ""}
-      ${renderManualForm(track, {
-        label: track.searchStatus === "matched_manual" ? "다른 영상으로 바꾸기" : "수동 입력하기",
-        open: showManualFormOpen,
-        buttonLabel: "수동 지정 저장",
-      })}
-    </div>
-  </article>`;
+  return `<article class="attention-card"><div class="head"><div><p class="title">${escapeHtml(track.trackName)}</p><div class="subtitle muted">${escapeHtml(formatTrackArtists(track))}</div></div><div class="chips"><span class="${statusClass(track.searchStatus)}">${escapeHtml(formatTrackStatus(track.searchStatus))}</span></div></div><div class="stack">${currentVideoId ? renderResolvedVideo(track, currentVideoId) : `<div class="inline-note">No confirmed YouTube video is saved yet.</div>`}${track.lastError ? `<div class="text" style="color:var(--danger)">${escapeHtml(track.lastError)}</div>` : ""}${renderManualForm(track, track.searchStatus === "matched_manual" ? "Replace manual match" : "Enter manual match", track.searchStatus !== "matched_manual", "Save manual match")}</div></article>`;
 }
 
 function renderRecommendationCard(track: DashboardAttentionTrack) {
-  if (!track.reviewVideoId) {
-    return "";
-  }
-
-  const reviewUrl = track.reviewVideoUrl ?? getVideoWatchUrl(track.reviewVideoId);
-  return `<div class="video-card">
-    <a class="video-thumb" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">
-      <img src="${escapeHtml(getThumbnailUrl(track.reviewVideoId))}" alt="${escapeHtml(track.reviewVideoTitle ?? track.trackName)}" loading="lazy" />
-    </a>
-    <div class="video-text">
-      <div class="video-title">${escapeHtml(track.reviewVideoTitle ?? track.reviewVideoId)}</div>
-      <div class="video-channel">${escapeHtml(track.reviewChannelTitle ?? "채널 정보 없음")}</div>
-      <div class="video-meta">추천 후보 링크: <a class="attention-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">${escapeHtml(reviewUrl)}</a></div>
-    </div>
-  </div>`;
+  const reviewUrl = track.reviewVideoUrl ?? getVideoWatchUrl(track.reviewVideoId ?? "");
+  return `<div class="video-card"><a href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer"><img src="${escapeHtml(getThumbnailUrl(track.reviewVideoId ?? ""))}" alt="${escapeHtml(track.reviewVideoTitle ?? track.trackName)}" loading="lazy" /></a><div><div class="video-title">${escapeHtml(track.reviewVideoTitle ?? track.reviewVideoId ?? "")}</div><div class="video-channel">${escapeHtml(track.reviewChannelTitle ?? "Unknown channel")}</div><div class="video-meta"><a href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">${escapeHtml(reviewUrl)}</a></div></div></div>`;
 }
 
 function renderResolvedVideo(track: DashboardAttentionTrack, videoId: string) {
-  const sourceText =
-    track.manualResolutionType === "recommended"
-      ? "추천 채택 완료"
-      : track.manualResolutionType === "manual_input"
-        ? "수동 입력 완료"
-        : "확정된 영상";
-
-  return `<div class="inline-note">
-    <div class="manual-current">${escapeHtml(sourceText)}</div>
-    <div class="video-title">${escapeHtml(track.matchedVideoTitle ?? videoId)}</div>
-    <div class="video-channel">${escapeHtml(track.matchedChannelTitle ?? "")}</div>
-    <div class="video-meta"><a class="attention-link" href="${escapeHtml(getVideoWatchUrl(videoId))}" target="_blank" rel="noreferrer">${escapeHtml(getVideoWatchUrl(videoId))}</a></div>
-  </div>`;
+  const sourceText = track.manualResolutionType === "recommended" ? "Accepted recommended candidate" : track.manualResolutionType === "manual_input" ? "Manual selection saved" : "Resolved video";
+  return `<div class="inline-note"><div class="text">${escapeHtml(sourceText)}</div><div class="video-title">${escapeHtml(track.matchedVideoTitle ?? videoId)}</div><div class="video-channel">${escapeHtml(track.matchedChannelTitle ?? "")}</div><div class="video-meta"><a href="${escapeHtml(getVideoWatchUrl(videoId))}" target="_blank" rel="noreferrer">${escapeHtml(getVideoWatchUrl(videoId))}</a></div></div>`;
 }
 
-function renderManualForm(
-  track: DashboardAttentionTrack,
-  options: {
-    label: string;
-    open: boolean;
-    buttonLabel: string;
-  },
-) {
-  const currentValue = track.manualVideoId ?? "";
-
-  return `<details class="manual-disclosure" ${options.open ? "open" : ""}>
-    <summary>${escapeHtml(options.label)}</summary>
-    <div class="manual-panel">
-      <form class="manual-form" method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/manual">
-        <div class="manual-form-row">
-          <input name="videoInput" value="${escapeHtml(currentValue)}" placeholder="YouTube URL 또는 video ID" />
-          <button type="submit" class="secondary" data-loading-label="저장 중...">${escapeHtml(options.buttonLabel)}</button>
-        </div>
-      </form>
-    </div>
-  </details>`;
+function renderManualForm(track: DashboardAttentionTrack, label: string, open: boolean, buttonLabel: string) {
+  return `<details ${open ? "open" : ""}><summary>${escapeHtml(label)}</summary><div class="log"><form class="manual-form" method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/manual"><div class="manual-row"><input name="videoInput" value="${escapeHtml(track.manualVideoId ?? "")}" placeholder="YouTube URL or video ID" /><button type="submit" class="secondary" data-loading-label="Saving...">${escapeHtml(buttonLabel)}</button></div></form></div></details>`;
 }
 
 function formatTrackArtists(track: DashboardAttentionTrack) {
   return `${track.artistNames.join(", ")}${track.albumName ? ` / ${track.albumName}` : ""}`;
 }
 
-function formatReviewReason(reason: string) {
-  if (reason.startsWith("title:")) {
-    return `제목 유사도 ${reason.slice("title:".length)}`;
-  }
+function formatRunStatus(status: string) {
+  return ({queued:"Queued",running:"Running",waiting_for_youtube_quota:"Waiting for YouTube quota",waiting_for_spotify_retry:"Waiting for Spotify retry",needs_reauth:"Needs reauth",partially_completed:"Partially completed",completed:"Completed",success:"Completed",failed:"Failed",quota_exhausted:"Waiting for YouTube quota"} as Record<string,string>)[status] ?? status;
+}
 
-  if (reason === "contains track title") {
-    return "제목 일치";
-  }
+function formatTrackStatus(status: string) {
+  return ({pending:"Pending",matched_auto:"Matched automatically",matched_manual:"Matched manually",review_required:"Review required",no_match:"No match",failed:"Failed",discovered:"Discovered",searching:"Searching",matched:"Matched",ready_to_insert:"Ready to insert",inserting:"Inserting",inserted:"Inserted",skipped_existing:"Already in playlist",waiting_for_youtube_quota:"Waiting for YouTube quota",waiting_for_spotify_retry:"Waiting for Spotify retry",needs_reauth:"Needs reauth"} as Record<string,string>)[status] ?? status;
+}
 
-  if (reason.startsWith("artist hits:")) {
-    return `아티스트 단서 ${reason.slice("artist hits:".length)}개`;
-  }
-
-  if (reason === "contains album") {
-    return "앨범명 포함";
-  }
-
-  if (reason === "official marker") {
-    return "공식 업로드 단서";
-  }
-
-  if (reason === "topic channel") {
-    return "토픽 채널";
-  }
-
-  if (reason === "vevo channel") {
-    return "VEVO 채널";
-  }
-
-  if (reason === "duration <=5s") {
-    return "길이 차이 5초 이하";
-  }
-
-  if (reason === "duration <=15s") {
-    return "길이 차이 15초 이하";
-  }
-
-  if (reason === "duration <=30s") {
-    return "길이 차이 30초 이하";
-  }
-
-  if (reason === "duration mismatch") {
-    return "길이 차이 큼";
-  }
-
-  if (reason === "not embeddable") {
-    return "삽입 제한";
-  }
-
-  if (reason === "not syndicated") {
-    return "공개 상태 제한";
-  }
-
-  if (reason === "negative title marker") {
-    return "비공식 키워드 감점";
-  }
-
-  if (reason === "negative channel marker") {
-    return "채널 감점";
-  }
-
-  return reason;
+function statusClass(status: string) {
+  return status === "failed" || status === "needs_reauth" ? "status error" : status === "waiting_for_youtube_quota" || status === "waiting_for_spotify_retry" || status === "review_required" || status === "no_match" || status === "quota_exhausted" ? "status warn" : "status";
 }
 
 function getVideoWatchUrl(videoId: string) {
@@ -912,135 +186,76 @@ function getThumbnailUrl(videoId: string) {
   return `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
 }
 
-function formatDate(timestamp: number | null) {
-  if (!timestamp) {
-    return "-";
-  }
-
-  return new Date(timestamp).toLocaleString("ko-KR", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
-function formatRunStatus(status: string) {
-  switch (status) {
-    case "running":
-      return "실행 중";
-    case "success":
-      return "성공";
-    case "failed":
-      return "실패";
-    case "quota_exhausted":
-      return "쿼터 소진";
-    default:
-      return status;
-  }
-}
-
-function formatRunTrigger(trigger: string) {
-  switch (trigger) {
-    case "manual":
-      return "수동 실행";
-    case "schedule":
-      return "예약 실행";
-    case "test":
-      return "테스트";
-    default:
-      return trigger;
-  }
-}
-
-function formatTrackStatus(status: string) {
-  switch (status) {
-    case "pending":
-      return "대기 중";
-    case "matched_auto":
-      return "자동 매칭 완료";
-    case "review_required":
-      return "검토 필요";
-    case "matched_manual":
-      return "수동 지정 완료";
-    case "failed":
-      return "실패";
-    case "no_match":
-      return "검색 결과 없음";
-    default:
-      return status;
-  }
+function formatDate(timestamp: number | null | undefined) {
+  if (!timestamp) return "-";
+  return new Date(timestamp).toLocaleString("ko-KR", { dateStyle: "medium", timeStyle: "short" });
 }
 
 function safeParseJson(raw: unknown) {
-  if (!raw) {
-    return { value: null, parsed: false };
-  }
-
-  if (typeof raw !== "string") {
-    return {
-      value: raw,
-      parsed: true,
-    };
-  }
-
-  try {
-    return {
-      value: JSON.parse(raw) as unknown,
-      parsed: true,
-    };
-  } catch {
-    return {
-      value: raw,
-      parsed: false,
-    };
-  }
+  if (!raw) return null;
+  if (typeof raw !== "string") return raw;
+  try { return JSON.parse(raw) as unknown; } catch { return raw; }
 }
 
 function formatStatsPreview(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return getPreviewText(typeof value === "string" ? value : "-");
-  }
-
+  if (!value || typeof value !== "object" || Array.isArray(value)) return previewText(typeof value === "string" ? value : "-");
   const stats = value as Partial<SyncStats>;
-  const previewItems = [
-    `추가 ${formatStatNumber(stats.insertedTracks)}`,
-    `중복 건너뜀 ${formatStatNumber(stats.skippedAlreadyInPlaylist)}`,
-    `검토 ${formatStatNumber(stats.reviewRequiredCount)}`,
-    `실패 ${formatStatNumber(stats.failedCount)}`,
-    `미매칭 ${formatStatNumber(stats.noMatchCount)}`,
-    `큐 ${formatStatNumber(stats.queuedTracks)}`,
-  ];
-
-  if (stats.quotaAbort === true) {
-    previewItems.push("quota 중단");
-  }
-
-  return previewItems.join(" · ");
+  const items = [`Inserted ${formatStat(stats.insertedTracks)}`, `Skipped ${formatStat(stats.skippedAlreadyInPlaylist)}`, `Review ${formatStat(stats.reviewRequiredCount)}`, `Failed ${formatStat(stats.failedCount)}`];
+  if (stats.quotaAbort === true) items.push("quota wait");
+  return items.join(" · ");
 }
 
 function formatStructuredLog(value: unknown) {
-  if (value == null) {
-    return "-";
-  }
-
-  if (typeof value === "string") {
-    return escapeHtml(value);
-  }
-
-  try {
-    return escapeHtml(JSON.stringify(value, null, 2));
-  } catch {
-    return escapeHtml(String(value));
-  }
+  if (value == null) return "-";
+  if (typeof value === "string") return escapeHtml(value);
+  try { return escapeHtml(JSON.stringify(value, null, 2)); } catch { return escapeHtml(String(value)); }
 }
 
-function getPreviewText(value: string | null | undefined, maxLength = 140) {
-  if (!value) {
-    return "-";
-  }
-
+function previewText(value: string | null | undefined, maxLength = 140) {
+  if (!value) return "-";
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
-function formatStatNumber(value: number | undefined) {
+function formatStat(value: number | undefined) {
   return typeof value === "number" ? String(value) : "-";
+}
+
+function formatStatsDisplay(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return previewText(typeof value === "string" ? value : "-");
+  const stats = value as Partial<SyncStats>;
+  const items = [
+    `Inserted ${formatStat(stats.insertedTracks)}`,
+    `Skipped ${formatStat(stats.skippedAlreadyInPlaylist)}`,
+    `Review ${formatStat(stats.reviewRequiredCount)}`,
+    `Failed ${formatStat(stats.failedCount)}`,
+  ];
+  if (stats.quotaAbort === true) items.push("quota wait");
+  return items.join(" | ");
+}
+
+function clientScript() {
+  return `
+    const liveRoot=document.getElementById("live-sync-root"), recentRunsRoot=document.getElementById("recent-runs-root"), stateNode=document.getElementById("dashboard-live-data");
+    let liveData=stateNode?JSON.parse(stateNode.textContent||"{}"):{}; const trackState={page:1,pageSize:50,filter:"all",runId:null};
+    const esc=(v)=>String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+    const fmtDate=(v)=>!v?"-":new Date(v).toLocaleString("ko-KR",{dateStyle:"medium",timeStyle:"short"});
+    const preview=(v,m=140)=>!v?"-":String(v).length>m?String(v).slice(0,m)+"...":String(v);
+    const safeParse=(v)=>{if(!v)return null;if(typeof v!=="string")return v;try{return JSON.parse(v)}catch{return v}};
+    const fmtLog=(v)=>{if(v==null)return "-";if(typeof v==="string")return esc(v);try{return esc(JSON.stringify(v,null,2))}catch{return esc(String(v))}};
+    const runStatus=(s)=>({queued:"Queued",running:"Running",waiting_for_youtube_quota:"Waiting for YouTube quota",waiting_for_spotify_retry:"Waiting for Spotify retry",needs_reauth:"Needs reauth",partially_completed:"Partially completed",completed:"Completed",success:"Completed",failed:"Failed",quota_exhausted:"Waiting for YouTube quota"}[s]||s);
+    const trackStatus=(s)=>({pending:"Pending",matched_auto:"Matched automatically",matched_manual:"Matched manually",review_required:"Review required",no_match:"No match",failed:"Failed",discovered:"Discovered",searching:"Searching",matched:"Matched",ready_to_insert:"Ready to insert",inserting:"Inserting",inserted:"Inserted",skipped_existing:"Already in playlist",waiting_for_youtube_quota:"Waiting for YouTube quota",waiting_for_spotify_retry:"Waiting for Spotify retry",needs_reauth:"Needs reauth"}[s]||s);
+    const cls=(s)=>["failed","needs_reauth"].includes(s)?"status error":["waiting_for_youtube_quota","waiting_for_spotify_retry","review_required","no_match","quota_exhausted"].includes(s)?"status warn":"status";
+    const statPreview=(v)=>{if(!v||typeof v!=="object"||Array.isArray(v))return preview(typeof v==="string"?v:"-"); return ["Inserted "+(v.insertedTracks??"-"),"Skipped "+(v.skippedAlreadyInPlaylist??"-"),"Review "+(v.reviewRequiredCount??"-"),"Failed "+(v.failedCount??"-")].concat(v.quotaAbort===true?["quota wait"]:[]).join(" · ")};
+    const safeStatPreview=(v)=>{if(!v||typeof v!=="object"||Array.isArray(v))return preview(typeof v==="string"?v:"-"); return ["Inserted "+(v.insertedTracks??"-"),"Skipped "+(v.skippedAlreadyInPlaylist??"-"),"Review "+(v.reviewRequiredCount??"-"),"Failed "+(v.failedCount??"-")].concat(v.quotaAbort===true?["quota wait"]:[]).join(" | ")};
+    const runCard=(run)=>{const stats=safeParse(run.statsJson); return '<article class="run-card"><div class="head"><div><div class="chips"><span class="'+cls(run.status)+'">'+esc(runStatus(run.status))+'</span><span class="tag">'+esc(run.trigger)+'</span></div></div><div><small class="muted">Started</small><div class="text">'+esc(fmtDate(run.startedAt))+'</div></div></div><div class="meta"><div><small class="muted">Finished</small><div class="text">'+esc(run.finishedAt?fmtDate(run.finishedAt):"Still active")+'</div></div><div><small class="muted">Stats</small><div class="text">'+esc(safeStatPreview(stats))+'</div></div><div><small class="muted">Error</small><div class="text">'+esc(preview(run.errorSummary))+'</div></div></div><div>'+(run.statsJson?'<details><summary>View stats</summary><div class="log">'+fmtLog(stats??run.statsJson??"-")+'</div></details>':'')+(run.errorSummary?'<details><summary>View error</summary><div class="log">'+fmtLog(run.errorSummary)+'</div></details>':'')+'</div></article>'};
+    const trackRow=(track,currentId)=>'<article class="track-row '+(currentId&&track.spotifyTrackId===currentId?'current-row':'')+'"><div class="head"><div><div class="text"><strong>'+esc(track.trackName)+'</strong></div><div class="text muted">'+esc((track.artistNames||[]).join(", "))+'</div></div><span class="'+cls(track.status)+'">'+esc(trackStatus(track.status))+'</span></div><div class="chips">'+(track.statusMessage?'<span class="tag">'+esc(track.statusMessage)+'</span>':'')+(track.matchedVideoTitle?'<span class="tag">YT: '+esc(track.matchedVideoTitle)+'</span>':'')+(track.playlistItemId?'<span class="tag">Inserted</span>':'')+'</div>'+(track.lastError?'<details><summary>Track error</summary><div class="log">'+esc(track.lastError)+'</div></details>':'')+'</article>';
+    const eventRow=(event)=>'<article class="event-row"><div class="head"><div><div class="text"><strong>'+esc(event.message)+'</strong></div><div class="text muted">'+esc(event.stage)+'</div></div><span class="'+cls(event.level==="error"?"failed":event.level==="warn"?"waiting_for_youtube_quota":"running")+'">'+esc(String(event.level).toUpperCase())+'</span></div><div class="chips"><span class="tag">'+esc(fmtDate(event.createdAt))+'</span>'+(event.spotifyTrackId?'<span class="tag">'+esc(event.spotifyTrackId)+'</span>':'')+'</div>'+(event.payloadJson?'<details><summary>Payload</summary><div class="log">'+fmtLog(event.payloadJson)+'</div></details>':'')+'</article>';
+    function renderLive(data){ if(!liveRoot) return; const run=data.activeRun; if(!run){ liveRoot.innerHTML='<div class="empty">No active or waiting sync run. Start a manual sync or wait for the next scheduled resume.</div>'; return; } const total=Number(run.totalTracks||0), completed=Number(run.completedTracks||0), remaining=Number(run.remainingTracks||Math.max(0,total-completed)), pct=total>0?Math.max(0,Math.min(100,Math.round(completed/total*100))):0; const currentId=run.currentSpotifyTrackId||null; const tracks=(data.activeRunTracks||[]).map((t)=>trackRow(t,currentId)).join("")||'<div class="empty">No active track rows are available yet.</div>'; const events=(data.activeRunEvents||[]).map(eventRow).join("")||'<div class="empty">No recent timeline entries yet.</div>'; liveRoot.innerHTML='<div class="stack"><div class="head"><div><div class="chips"><span class="'+cls(run.status)+'">'+esc(runStatus(run.status))+'</span><span class="tag">'+esc(run.phase||"running")+'</span>'+(run.pauseReason?'<span class="tag">'+esc(run.pauseReason)+'</span>':'')+'</div><h2 style="margin:10px 0 0;">Live Sync Run</h2></div><div class="note">Updated '+esc(fmtDate(data.activeRunUpdatedAt||run.updatedAt||run.lastHeartbeatAt||run.startedAt))+'</div></div><div class="summary-grid"><div><small class="muted">Status</small><div class="text">'+esc(run.statusMessage||runStatus(run.status))+'</div></div><div><small class="muted">Progress</small><div class="text">'+esc(completed+" / "+total+" complete")+'</div></div><div><small class="muted">Remaining</small><div class="text">'+esc(String(remaining))+'</div></div><div><small class="muted">Current track</small><div class="current">'+esc(run.currentTrackName||"-")+'</div></div><div><small class="muted">Next retry</small><div class="text">'+esc(fmtDate(run.nextRetryAt))+'</div></div><div><small class="muted">Last error</small><div class="text">'+esc(preview(run.lastErrorSummary||run.errorSummary||"-",200))+'</div></div></div><div class="progress"><div class="note">Overall progress</div><div class="bar"><span style="width:'+pct+'%"></span></div><div class="text">'+esc(String(pct)+"%")+'</div></div><div class="live-board"><section><div class="sticky"><h3 style="margin:0 0 8px;">Spotify track flow</h3><div class="controls"><select id="track-filter"><option value="all">All tracks</option><option value="active">Only active states</option><option value="waiting_for_youtube_quota">Waiting for YouTube quota</option><option value="waiting_for_spotify_retry">Waiting for Spotify retry</option><option value="review_required">Review required</option><option value="failed">Failed</option></select><button type="button" class="secondary" id="track-refresh">Refresh tracks</button></div><div class="note" id="track-page-note"></div></div><div class="scroll"><div class="track-list" id="track-list-items">'+tracks+'</div></div><div class="controls" style="margin-top:10px;"><button type="button" class="secondary" id="track-prev">Previous</button><button type="button" class="secondary" id="track-next">Next</button></div></section><section><div class="sticky"><h3 style="margin:0;">Recent timeline</h3><div class="note">Payload blocks wrap and scroll internally so long JSON and errors never stretch the page.</div></div><div class="scroll"><div class="event-list">'+events+'</div></div></section></div></div>'; trackState.runId=run.id; attachTrackControls(total); }
+    async function loadTrackPage(){ if(!trackState.runId) return 0; const res=await fetch('/api/sync-runs/'+encodeURIComponent(String(trackState.runId))+'/tracks?page='+encodeURIComponent(String(trackState.page))+'&pageSize='+encodeURIComponent(String(trackState.pageSize))+'&filter='+encodeURIComponent(trackState.filter),{headers:{accept:"application/json"}}); if(!res.ok) return 0; const payload=await res.json(), items=Array.isArray(payload.items)?payload.items:[], root=document.getElementById("track-list-items"), note=document.getElementById("track-page-note"); if(root){ root.innerHTML=items.length===0?'<div class="empty">No tracks match this filter.</div>':items.map((t)=>trackRow(t,payload.run?.currentSpotifyTrackId||liveData.activeRun?.currentSpotifyTrackId||null)).join(""); } if(note){ const start=items.length===0?0:(trackState.page-1)*trackState.pageSize+1, end=(trackState.page-1)*trackState.pageSize+items.length; note.textContent=items.length===0?"No tracks on this page":"Showing "+start+" - "+end+" of "+payload.total; } return items.length; }
+    function attachTrackControls(total){ const filter=document.getElementById("track-filter"), prev=document.getElementById("track-prev"), next=document.getElementById("track-next"), refresh=document.getElementById("track-refresh"), note=document.getElementById("track-page-note"); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; filter.onchange=async()=>{ trackState.filter=filter.value; trackState.page=1; await loadTrackPage(); }; } if(prev instanceof HTMLButtonElement){ prev.onclick=async()=>{ if(trackState.page<=1) return; trackState.page-=1; await loadTrackPage(); }; } if(next instanceof HTMLButtonElement){ next.onclick=async()=>{ trackState.page+=1; const count=await loadTrackPage(); if(count===0) trackState.page=Math.max(1,trackState.page-1); }; } if(refresh instanceof HTMLButtonElement){ refresh.onclick=async()=>{ await loadTrackPage(); }; } if(note && Array.isArray(liveData.activeRunTracks)){ note.textContent=liveData.activeRunTracks.length===0?"Tracks will appear here as the run progresses.":"Showing 1 - "+liveData.activeRunTracks.length+" of "+total; } }
+    async function refreshLive(){ const res=await fetch("/api/dashboard/live",{headers:{accept:"application/json"}}); if(!res.ok) return; liveData=await res.json(); if(recentRunsRoot){ recentRunsRoot.innerHTML=Array.isArray(liveData.recentRuns)&&liveData.recentRuns.length>0?liveData.recentRuns.map(runCard).join(""):'<p class="muted">No sync runs yet.</p>'; } renderLive(liveData); }
+    function loop(){ const delay=liveData&&liveData.activeRun?5000:20000; setTimeout(async()=>{ await refreshLive(); loop(); },delay); }
+    document.addEventListener("submit",(event)=>{ const form=event.target; if(!(form instanceof HTMLFormElement)) return; const confirmMessage=form.dataset.confirmMessage; if(confirmMessage && !window.confirm(confirmMessage)){ event.preventDefault(); return; } const promptText=form.dataset.promptText; if(promptText){ const answer=window.prompt(promptText,""); if(answer===null){ event.preventDefault(); return; } const input=form.querySelector('input[name="confirmationText"]'); if(input instanceof HTMLInputElement) input.value=answer; } const submitter=event.submitter instanceof HTMLButtonElement?event.submitter:form.querySelector('button[type="submit"]'); form.querySelectorAll("button").forEach((button)=>{button.disabled=true}); if(submitter instanceof HTMLButtonElement){ submitter.textContent=submitter.dataset.loadingLabel||"Working..."; } });
+    renderLive(liveData); if(recentRunsRoot){ recentRunsRoot.innerHTML=Array.isArray(liveData.recentRuns)&&liveData.recentRuns.length>0?liveData.recentRuns.map(runCard).join(""):'<p class="muted">No sync runs yet.</p>'; } loop();
+  `;
 }

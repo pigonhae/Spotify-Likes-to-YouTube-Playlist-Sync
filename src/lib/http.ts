@@ -38,6 +38,9 @@ export async function requestJson<T>(url: string, options: RequestJsonOptions): 
 
       if (!response.ok) {
         const bodyText = await response.text();
+        const retryAfterHeader = response.headers.get("retry-after");
+        const retryAfterSeconds = parseRetryAfterSeconds(retryAfterHeader);
+        const reasonCode = extractReasonCode(bodyText);
 
         if (attempt < retries && retryStatusCodes.includes(response.status)) {
           await sleep(300 * (attempt + 1));
@@ -49,6 +52,9 @@ export async function requestJson<T>(url: string, options: RequestJsonOptions): 
           `${provider} request failed with status ${response.status}: ${truncate(bodyText)}`,
           provider,
           response.status,
+          truncate(bodyText),
+          retryAfterSeconds,
+          reasonCode,
         );
       }
 
@@ -73,6 +79,50 @@ export async function requestJson<T>(url: string, options: RequestJsonOptions): 
   }
 
   throw new ExternalApiError(`${provider} request failed: ${String(lastError)}`, provider);
+}
+
+function parseRetryAfterSeconds(value: string | null) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsedNumber = Number(value);
+  if (Number.isFinite(parsedNumber) && parsedNumber >= 0) {
+    return parsedNumber;
+  }
+
+  const parsedDate = Date.parse(value);
+  if (Number.isFinite(parsedDate)) {
+    return Math.max(0, Math.ceil((parsedDate - Date.now()) / 1000));
+  }
+
+  return undefined;
+}
+
+function extractReasonCode(bodyText: string) {
+  if (!bodyText) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      error?:
+        | string
+        | {
+        status?: string;
+        errors?: Array<{ reason?: string }>;
+        };
+      error_description?: string;
+    };
+
+    if (typeof parsed.error === "string") {
+      return parsed.error;
+    }
+
+    return parsed.error?.errors?.[0]?.reason ?? parsed.error?.status ?? parsed.error_description;
+  } catch {
+    return undefined;
+  }
 }
 
 function truncate(value: string, max = 400) {

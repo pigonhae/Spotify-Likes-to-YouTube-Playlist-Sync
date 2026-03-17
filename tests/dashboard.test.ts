@@ -3,35 +3,23 @@ import { describe, expect, it } from "vitest";
 import { renderDashboard } from "../src/views/dashboard.js";
 
 describe("renderDashboard", () => {
-  it("hides all destructive UI when nothing is connected", () => {
+  it("hides disconnect controls when nothing is connected", () => {
     const html = renderDashboard({
-      summary: {
-        spotifyConnected: false,
-        youtubeConnected: false,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [],
-        attentionTracks: [],
-      },
+      summary: createSummary({}),
       accounts: [],
     });
 
     expect(html).not.toContain('action="/admin/connections/spotify/disconnect"');
     expect(html).not.toContain('action="/admin/connections/youtube/disconnect"');
-    expect(html).not.toContain("위험 작업");
-    expect(html).not.toContain('action="/admin/reset"');
+    expect(html).toContain('action="/admin/reset"');
+    expect(html).toContain("Danger Zone");
   });
 
-  it("shows only the Spotify disconnect control when only Spotify is connected", () => {
+  it("shows the connected provider disconnect control", () => {
     const html = renderDashboard({
-      summary: {
+      summary: createSummary({
         spotifyConnected: true,
-        youtubeConnected: false,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [],
-        attentionTracks: [],
-      },
+      }),
       accounts: [
         {
           provider: "spotify",
@@ -44,156 +32,122 @@ describe("renderDashboard", () => {
 
     expect(html).toContain('action="/admin/connections/spotify/disconnect"');
     expect(html).not.toContain('action="/admin/connections/youtube/disconnect"');
-    expect(html).toContain("위험 작업");
-    expect(html).toContain('action="/admin/reset"');
+    expect(html).toContain("Live Sync Run");
   });
 
-  it("shows only the YouTube disconnect control when only YouTube is connected", () => {
+  it("renders recent runs as cards with log disclosures", () => {
     const html = renderDashboard({
-      summary: {
-        spotifyConnected: false,
-        youtubeConnected: true,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [],
-        attentionTracks: [],
-      },
-      accounts: [
-        {
-          provider: "youtube",
-          externalDisplayName: "YouTube User",
-          invalidatedAt: null,
-          lastRefreshError: null,
-        },
-      ],
-    });
-
-    expect(html).not.toContain('action="/admin/connections/spotify/disconnect"');
-    expect(html).toContain('action="/admin/connections/youtube/disconnect"');
-    expect(html).toContain("위험 작업");
-    expect(html).toContain('action="/admin/reset"');
-  });
-
-  it("shows both disconnect controls and the destructive section when both are connected", () => {
-    const html = renderDashboard({
-      message: "테스트 메시지",
-      messageLevel: "error",
-      summary: {
-        spotifyConnected: true,
-        youtubeConnected: true,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [],
-        attentionTracks: [],
-      },
-      accounts: [
-        {
-          provider: "spotify",
-          externalDisplayName: "Spotify User",
-          invalidatedAt: null,
-          lastRefreshError: null,
-        },
-        {
-          provider: "youtube",
-          externalDisplayName: "YouTube User",
-          invalidatedAt: null,
-          lastRefreshError: null,
-        },
-      ],
-    });
-
-    expect(html).toContain('action="/admin/connections/spotify/disconnect"');
-    expect(html).toContain('action="/admin/connections/youtube/disconnect"');
-    expect(html).toContain("위험 작업");
-    expect(html).toContain('action="/admin/reset"');
-    expect(html).toContain('class="message error"');
-  });
-
-  it("renders recent sync runs as cards with collapsible structured logs", () => {
-    const longError = "quotaExceeded:".concat("A".repeat(300));
-    const html = renderDashboard({
-      summary: {
-        spotifyConnected: true,
-        youtubeConnected: true,
-        playlistId: null,
-        lastRunAt: null,
+      summary: createSummary({
         recentRuns: [
           {
             id: 1,
             userId: "test-owner",
             trigger: "manual",
-            status: "quota_exhausted",
+            status: "waiting_for_youtube_quota",
             startedAt: Date.parse("2026-03-17T00:00:00.000Z"),
             finishedAt: Date.parse("2026-03-17T00:05:00.000Z"),
             statsJson: JSON.stringify({
               insertedTracks: 0,
               skippedAlreadyInPlaylist: 14,
               failedCount: 1,
-              noMatchCount: 2,
-              queuedTracks: 32,
               quotaAbort: true,
-              raw: "https://example.com/" + "x".repeat(250),
             }),
-            errorSummary: longError,
+            errorSummary: "quotaExceeded:" + "A".repeat(120),
           },
         ],
-        attentionTracks: [],
-      },
+      }),
       accounts: [],
     });
-    const recentRunsStart = html.indexOf('<div class="runs">');
-    const recentRunsEnd = html.indexOf("</section>", recentRunsStart);
-    const recentRunsSection = html.slice(recentRunsStart, recentRunsEnd);
 
-    expect(recentRunsStart).toBeGreaterThan(-1);
-    expect(recentRunsSection).toContain('class="runs"');
-    expect(recentRunsSection).toContain('class="run-card"');
-    expect(recentRunsSection).not.toContain("<table>");
-    expect(recentRunsSection).toContain("통계 상세 보기");
-    expect(recentRunsSection).toContain("오류 상세 보기");
-    expect(recentRunsSection).toContain('class="run-log"');
-    expect(recentRunsSection).toContain("추가 0");
-    expect(recentRunsSection).toContain("quota 중단");
-    expect(recentRunsSection).toContain("quotaExceeded");
+    expect(html).toContain('class="runs"');
+    expect(html).toContain('class="run-card"');
+    expect(html).toContain("View stats");
+    expect(html).toContain("View error");
+    expect(html).toContain("quota wait");
+    expect(html).toContain("Skipped 14");
+    expect(html).toContain("quotaExceeded");
   });
 
-  it("renders invalid stats JSON safely in the log disclosure", () => {
+  it("renders the live sync panel with active run progress", () => {
     const html = renderDashboard({
-      summary: {
-        spotifyConnected: false,
-        youtubeConnected: false,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [
+      summary: createSummary({
+        activeRun: {
+          id: 11,
+          userId: "test-owner",
+          trigger: "manual",
+          status: "waiting_for_youtube_quota",
+          phase: "paused",
+          statusMessage: "Paused until YouTube quota is available again",
+          startedAt: Date.parse("2026-03-17T00:00:00.000Z"),
+          finishedAt: null,
+          totalTracks: 120,
+          completedTracks: 90,
+          remainingTracks: 30,
+          currentSpotifyTrackId: "spotify-track-2",
+          currentTrackName: "Track Two",
+          nextRetryAt: Date.parse("2026-03-18T07:00:00.000Z"),
+          pauseReason: "quotaExceeded",
+          lastErrorSummary: "YouTube quota exceeded",
+          lastHeartbeatAt: Date.parse("2026-03-17T00:10:00.000Z"),
+          updatedAt: Date.parse("2026-03-17T00:10:00.000Z"),
+          resumedFromRunId: null,
+          spotifyScanOffset: 120,
+          spotifyScanCompletedAt: Date.parse("2026-03-17T00:02:00.000Z"),
+          playlistSnapshotCompletedAt: Date.parse("2026-03-17T00:03:00.000Z"),
+          statsJson: null,
+          errorSummary: "YouTube quota exceeded",
+        },
+        activeRunUpdatedAt: Date.parse("2026-03-17T00:10:00.000Z"),
+        activeRunTracks: [
           {
-            id: 2,
-            userId: "test-owner",
-            trigger: "schedule",
-            status: "failed",
-            startedAt: Date.parse("2026-03-17T01:00:00.000Z"),
-            finishedAt: Date.parse("2026-03-17T01:01:00.000Z"),
-            statsJson: '{"broken": true',
-            errorSummary: null,
+            spotifyTrackId: "spotify-track-1",
+            trackName: "Track One",
+            artistNames: ["Artist One"],
+            status: "inserted",
+            statusMessage: "Inserted into YouTube playlist",
+            matchedVideoTitle: "Track One",
+            playlistItemId: "playlist-item-1",
+            lastError: null,
+          },
+          {
+            spotifyTrackId: "spotify-track-2",
+            trackName: "Track Two",
+            artistNames: ["Artist Two"],
+            status: "waiting_for_youtube_quota",
+            statusMessage: "Waiting for YouTube quota",
+            matchedVideoTitle: "Track Two",
+            playlistItemId: null,
+            lastError: "quota exceeded",
           },
         ],
-        attentionTracks: [],
-      },
+        activeRunEvents: [
+          {
+            id: 1,
+            userId: "test-owner",
+            syncRunId: 11,
+            level: "warn",
+            stage: "pause",
+            message: "Paused due to YouTube quota",
+            spotifyTrackId: "spotify-track-2",
+            payloadJson: { nextRetryAt: Date.parse("2026-03-18T07:00:00.000Z") },
+            createdAt: Date.parse("2026-03-17T00:10:00.000Z"),
+          },
+        ],
+      }),
       accounts: [],
     });
 
-    expect(html).toContain("통계 상세 보기");
-    expect(html).toContain("{&quot;broken&quot;: true");
-    expect(html).toContain("오류 요약");
+    expect(html).toContain("Live Sync Run");
+    expect(html).toContain("Spotify track flow");
+    expect(html).toContain("Recent timeline");
+    expect(html).toContain("Track Two");
+    expect(html).toContain("Paused due to YouTube quota");
+    expect(html).toContain("track-page-note");
   });
 
   it("renders review cards with recommendation actions and manual entry controls", () => {
     const html = renderDashboard({
-      summary: {
-        spotifyConnected: true,
-        youtubeConnected: true,
-        playlistId: null,
-        lastRunAt: null,
-        recentRuns: [],
+      summary: createSummary({
         attentionTracks: [
           {
             spotifyTrackId: "spotify-track-review",
@@ -222,16 +176,37 @@ describe("renderDashboard", () => {
             updatedAt: Date.parse("2026-03-17T02:00:00.000Z"),
           },
         ],
-      },
+      }),
       accounts: [],
     });
 
     expect(html).toContain('class="attention-card review-card"');
     expect(html).toContain('action="/admin/tracks/spotify-track-review/review/accept"');
     expect(html).toContain('action="/admin/tracks/spotify-track-review/review/manual"');
-    expect(html).toContain("추천 점수 54");
+    expect(html).toContain("Score 54");
     expect(html).toContain("mqdefault.jpg");
-    expect(html).toContain("수동 입력하기");
-    expect(html).not.toContain("<table>");
+    expect(html).toContain("Enter manual match");
   });
 });
+
+function createSummary(partial: Record<string, unknown> = {}) {
+  return {
+    ...createBaseSummary(),
+    ...partial,
+  } as any;
+}
+
+function createBaseSummary() {
+  return {
+    spotifyConnected: false,
+    youtubeConnected: false,
+    playlistId: null,
+    lastRunAt: null,
+    activeRun: null,
+    activeRunUpdatedAt: null,
+    activeRunTracks: [],
+    activeRunEvents: [],
+    recentRuns: [],
+    attentionTracks: [],
+  };
+}

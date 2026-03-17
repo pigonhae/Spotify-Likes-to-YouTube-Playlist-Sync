@@ -39,4 +39,18 @@ export class QuotaService {
   async hasRoom(estimatedAmount: number, dayKey = this.getDayKey()) {
     return (await this.getUsage(dayKey)) + estimatedAmount <= this.dailyLimit;
   }
+
+  getNextResetAt(from = new Date()) {
+    const currentDayKey = this.getDayKey(from);
+    const probe = new Date(from.getTime());
+
+    for (let minutes = 1; minutes <= 48 * 60; minutes += 1) {
+      probe.setUTCMinutes(probe.getUTCMinutes() + 1);
+      if (this.getDayKey(probe) !== currentDayKey) {
+        return probe.getTime();
+      }
+    }
+
+    throw new Error("Unable to resolve next YouTube quota reset time");
+  }
 }

@@ -1,4 +1,4 @@
-import { QuotaExceededError } from "../../lib/errors.js";
+import { ExternalApiError, QuotaExceededError } from "../../lib/errors.js";
 import { requestJson } from "../../lib/http.js";
 import type { AppConfig } from "../../config.js";
 import type { SearchCandidate } from "../../types.js";
@@ -316,6 +316,25 @@ export class YouTubeClient {
 }
 
 function maybeThrowQuota(error: unknown): never | void {
+  if (error instanceof QuotaExceededError) {
+    throw error;
+  }
+
+  if (error instanceof ExternalApiError) {
+    const reasonCode = error.reasonCode?.toLowerCase();
+    const isQuotaLike =
+      reasonCode === "quotaexceeded" ||
+      reasonCode === "dailylimitexceeded" ||
+      reasonCode === "ratelimitexceeded" ||
+      reasonCode === "userratelimitexceeded" ||
+      reasonCode === "servinglimitexceeded" ||
+      /quota/i.test(error.message);
+
+    if (isQuotaLike) {
+      throw new QuotaExceededError(error.message, error.retryAfterSeconds, error.reasonCode);
+    }
+  }
+
   if (error instanceof Error && /quota/i.test(error.message)) {
     throw new QuotaExceededError(error.message);
   }

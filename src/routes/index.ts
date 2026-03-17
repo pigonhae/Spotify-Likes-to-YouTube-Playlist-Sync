@@ -5,6 +5,22 @@ import { AppError, ValidationError } from "../lib/errors.js";
 import { renderDashboard } from "../views/dashboard.js";
 
 type FlashLevel = "success" | "error";
+type TrackFilter =
+  | "all"
+  | "active"
+  | "discovered"
+  | "searching"
+  | "matched"
+  | "review_required"
+  | "ready_to_insert"
+  | "inserting"
+  | "inserted"
+  | "skipped_existing"
+  | "waiting_for_youtube_quota"
+  | "waiting_for_spotify_retry"
+  | "needs_reauth"
+  | "no_match"
+  | "failed";
 
 export async function registerRoutes(app: FastifyInstance, context: AppContext) {
   const basicAuthGuard = app.basicAuth;
@@ -40,7 +56,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     const message = typeof query.message === "string" ? query.message : undefined;
     const messageLevel: FlashLevel = query.level === "error" ? "error" : "success";
     const [summary, accounts] = await Promise.all([
-      context.store.getDashboardSummary(),
+      context.store.getDashboardLiveData(),
       context.store.listOAuthAccounts(),
     ]);
 
@@ -59,6 +75,45 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     reply.type("text/html; charset=utf-8").send(html);
   });
 
+  app.get("/api/dashboard/live", { onRequest: basicAuthGuard }, async () => {
+    return context.store.getDashboardLiveData();
+  });
+
+  app.get("/api/sync-runs/:runId/tracks", { onRequest: basicAuthGuard }, async (request) => {
+    const params = request.params as { runId: string };
+    const query = request.query as {
+      page?: string;
+      pageSize?: string;
+      filter?: string;
+    };
+    const runId = Number(params.runId);
+    if (!Number.isInteger(runId) || runId <= 0) {
+      throw new ValidationError("Invalid sync run id");
+    }
+
+    const page = query.page ? Number(query.page) : 1;
+    const pageSize = query.pageSize ? Number(query.pageSize) : 50;
+    const filter = isTrackFilter(query.filter) ? query.filter : "all";
+
+    const [run, items, total] = await Promise.all([
+      context.store.getSyncRun(runId),
+      context.store.listSyncRunTracks(runId, { page, pageSize, filter }),
+      context.store.countSyncRunTracks(runId, filter),
+    ]);
+
+    if (!run) {
+      throw new AppError("Sync run not found", 404);
+    }
+
+    return {
+      run,
+      page,
+      pageSize,
+      total,
+      items,
+    };
+  });
+
   app.get("/auth/spotify/start", { onRequest: basicAuthGuard }, async (_request, reply) => {
     const url = await context.oauthService.createAuthorizationUrl("spotify");
     return reply.redirect(url);
@@ -72,32 +127,32 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   app.get("/auth/spotify/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`Spotify 인증에 실패했습니다: ${query.error}`, 400);
+      throw new AppError(`Spotify authorization failed: ${query.error}`, 400);
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("Spotify 콜백에 code 또는 state가 없습니다.");
+      throw new ValidationError("Spotify callback is missing code or state.");
     }
 
     await context.oauthService.handleSpotifyCallback(query.code, query.state);
-    return redirectWithFlash(reply, "Spotify 계정이 연결되었습니다.");
+    return redirectWithFlash(reply, "Spotify account connected.");
   });
 
   app.get("/auth/youtube/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`YouTube 인증에 실패했습니다: ${query.error}`, 400);
+      throw new AppError(`YouTube authorization failed: ${query.error}`, 400);
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("YouTube 콜백에 code 또는 state가 없습니다.");
+      throw new ValidationError("YouTube callback is missing code or state.");
     }
 
     await context.oauthService.handleYouTubeCallback(query.code, query.state);
-    return redirectWithFlash(reply, "YouTube 계정이 연결되었습니다.");
+    return redirectWithFlash(reply, "YouTube account connected.");
   });
 
   app.post("/admin/sync", { onRequest: basicAuthGuard }, async (_request, reply) => {
-    await context.syncService.run("manual");
-    return redirectWithFlash(reply, "동기화를 완료했습니다.");
+    const result = await context.syncService.run("manual");
+    return redirectWithFlash(reply, formatSyncFlashMessage(result), "success");
   });
 
   app.post(
@@ -109,8 +164,8 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         () => context.accountManagementService.disconnectSpotify(),
         (result) =>
           result.alreadyDisconnected
-            ? "Spotify 계정은 이미 연결 해제된 상태입니다."
-            : "Spotify 연결을 해제했습니다. Spotify 계정을 다시 연결하기 전까지 동기화는 진행되지 않습니다.",
+            ? "Spotify is already disconnected."
+            : "Spotify disconnected. Sync will stay paused until Spotify is connected again.",
       ),
   );
 
@@ -123,21 +178,21 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         () => context.accountManagementService.disconnectYouTube(),
         (result) =>
           result.alreadyDisconnected
-            ? "YouTube 계정은 이미 연결 해제된 상태입니다."
-            : "YouTube 연결을 해제했습니다. 관리 중이던 재생목록 상태도 함께 초기화되었습니다.",
+            ? "YouTube is already disconnected."
+            : "YouTube disconnected. Managed playlist ownership data was cleared.",
       ),
   );
 
   app.post("/admin/reset", { onRequest: basicAuthGuard }, async (request, reply) => {
     const body = request.body as { confirmationText?: string } | undefined;
     if (body?.confirmationText !== "RESET") {
-      return redirectWithFlash(reply, "전체 초기화를 진행하려면 RESET을 정확히 입력해 주세요.", "error");
+      return redirectWithFlash(reply, "Type RESET to confirm a full reset.", "error");
     }
 
     return handleDashboardAction(
       reply,
       () => context.accountManagementService.resetAll(),
-      () => "프로젝트 상태를 전체 초기화했습니다. 처음 연결하는 상태로 돌아갔습니다.",
+      () => "All project state was reset.",
     );
   });
 
@@ -151,7 +206,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
           const params = request.params as { spotifyTrackId: string };
           return context.trackReviewService.acceptRecommendation(params.spotifyTrackId);
         },
-        (result) => result.alreadySelected ? "이미 추천 영상을 사용 중입니다." : "추천 영상을 확정했습니다.",
+        (result) => result.alreadySelected ? "That recommendation is already selected." : "Recommendation accepted.",
       ),
   );
 
@@ -164,12 +219,9 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
-          return context.trackReviewService.saveManualSelection(
-            params.spotifyTrackId,
-            body.videoInput ?? "",
-          );
+          return context.trackReviewService.saveManualSelection(params.spotifyTrackId, body.videoInput ?? "");
         },
-        (result) => result.alreadySelected ? "같은 YouTube 영상을 이미 저장했습니다." : "수동 지정을 저장했습니다.",
+        (result) => result.alreadySelected ? "That YouTube video is already selected." : "Manual selection saved.",
       ),
   );
 
@@ -182,12 +234,9 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
-          return context.trackReviewService.saveManualSelection(
-            params.spotifyTrackId,
-            body.videoInput ?? "",
-          );
+          return context.trackReviewService.saveManualSelection(params.spotifyTrackId, body.videoInput ?? "");
         },
-        (result) => result.alreadySelected ? "같은 YouTube 영상을 이미 저장했습니다." : "수동 지정을 저장했습니다.",
+        (result) => result.alreadySelected ? "That YouTube video is already selected." : "Manual selection saved.",
       ),
   );
 
@@ -198,4 +247,41 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
       ...result,
     };
   });
+}
+
+function formatSyncFlashMessage(result: { status: string }) {
+  switch (result.status) {
+    case "waiting_for_youtube_quota":
+      return "Paused for YouTube quota. The run will resume automatically.";
+    case "waiting_for_spotify_retry":
+      return "Paused for Spotify retry. The run will resume automatically.";
+    case "needs_reauth":
+      return "Paused until Spotify or YouTube is reconnected.";
+    case "partially_completed":
+      return "Automatic processing finished, but some tracks still need review.";
+    case "completed":
+      return "Sync completed successfully.";
+    default:
+      return "Sync started.";
+  }
+}
+
+function isTrackFilter(value: string | undefined): value is TrackFilter {
+  return value !== undefined && [
+    "all",
+    "active",
+    "discovered",
+    "searching",
+    "matched",
+    "review_required",
+    "ready_to_insert",
+    "inserting",
+    "inserted",
+    "skipped_existing",
+    "waiting_for_youtube_quota",
+    "waiting_for_spotify_retry",
+    "needs_reauth",
+    "no_match",
+    "failed",
+  ].includes(value);
 }

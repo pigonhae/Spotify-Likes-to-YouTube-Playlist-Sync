@@ -46,7 +46,7 @@ export class AccountManagementService {
 
     if (!acquired) {
       throw new AppError(
-        "동기화 작업이 실행 중이라 지금은 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "Another sync or account operation is already running. Please wait and try again.",
         409,
       );
     }

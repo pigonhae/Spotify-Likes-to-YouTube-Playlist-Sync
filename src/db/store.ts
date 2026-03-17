@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
 
-import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import type {
   ManualResolutionType,
   MatchResult,
   Provider,
   SpotifyTrack,
+  SyncEventLevel,
+  SyncProgressSnapshot,
+  SyncRunLifecycleStatus,
+  SyncRunPhase,
+  SyncRunTrackStatus,
   TrackSearchStatus,
 } from "../types.js";
 import {
@@ -15,6 +20,8 @@ import {
   oauthStates,
   playlistVideos,
   syncLock,
+  syncRunEvents,
+  syncRunTracks,
   syncRuns,
   syncState,
   trackMappings,
@@ -23,6 +30,21 @@ import {
 import type { AppDatabase } from "./client.js";
 
 const PLAYLIST_SETTING_KEY = "youtube.playlistId";
+const ACTIVE_SYNC_STATUSES: SyncRunLifecycleStatus[] = [
+  "queued",
+  "running",
+  "waiting_for_youtube_quota",
+  "waiting_for_spotify_retry",
+  "needs_reauth",
+];
+const TERMINAL_RUN_TRACK_STATUSES: SyncRunTrackStatus[] = [
+  "inserted",
+  "skipped_existing",
+  "review_required",
+  "no_match",
+  "failed",
+  "needs_reauth",
+];
 
 interface ManualSelectionMetadata {
   matchedVideoTitle?: string | null;
@@ -30,6 +52,35 @@ interface ManualSelectionMetadata {
   matchedSource?: string | null;
   matchedScore?: number | null;
   manualResolutionType?: ManualResolutionType | null;
+}
+
+interface SyncRunTrackUpsertInput {
+  syncRunId: number;
+  track: SpotifyTrack;
+  trackOrder: number;
+}
+
+interface SyncRunTrackPatch {
+  status?: SyncRunTrackStatus;
+  statusMessage?: string | null;
+  currentTrackName?: string | null;
+  matchedVideoId?: string | null;
+  matchedVideoTitle?: string | null;
+  matchedChannelTitle?: string | null;
+  matchedScore?: number | null;
+  matchedSource?: string | null;
+  reviewVideoId?: string | null;
+  reviewVideoTitle?: string | null;
+  reviewChannelTitle?: string | null;
+  reviewVideoUrl?: string | null;
+  reviewSource?: string | null;
+  reviewScore?: number | null;
+  reviewReasonsJson?: string | null;
+  manualVideoId?: string | null;
+  manualResolutionType?: ManualResolutionType | null;
+  playlistItemId?: string | null;
+  lastError?: string | null;
+  incrementAttemptCount?: boolean;
 }
 
 export async function createAppStore(
@@ -414,7 +465,7 @@ export class AppStore {
       );
   }
 
-  async createSyncRun(trigger: string) {
+  async createSyncRun(trigger: string, resumedFromRunId: number | null = null) {
     const now = Date.now();
     const result = await this.db
       .insert(syncRuns)
@@ -422,43 +473,229 @@ export class AppStore {
         userId: this.userId,
         trigger,
         status: "running",
+        phase: "queued",
+        statusMessage: "대기 중",
         startedAt: now,
+        totalTracks: 0,
+        completedTracks: 0,
+        remainingTracks: 0,
+        currentSpotifyTrackId: null,
+        currentTrackName: null,
+        nextRetryAt: null,
+        pauseReason: null,
+        lastErrorSummary: null,
+        lastHeartbeatAt: now,
+        updatedAt: now,
+        resumedFromRunId,
+        spotifyScanOffset: 0,
+        spotifyScanCompletedAt: null,
+        playlistSnapshotCompletedAt: null,
       })
       .returning({ id: syncRuns.id });
 
-    await this.db
-      .insert(syncState)
-      .values({
-        userId: this.userId,
-        lastStartedSyncAt: now,
-        lastSuccessfulSyncAt: null,
-        lastFailedSyncAt: null,
-        spotifyScanOffset: null,
-        lastError: null,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: syncState.userId,
-        set: {
-          lastStartedSyncAt: now,
-          updatedAt: now,
-        },
-      });
+    const runId = result[0]?.id ?? 0;
+    await this.upsertSyncState({
+      lastStartedSyncAt: now,
+      activeRunId: runId,
+      lastHeartbeatAt: now,
+      spotifyScanOffset: 0,
+      lastError: null,
+    });
 
-    return result[0]?.id ?? 0;
+    return runId;
   }
 
-  async finishSyncRun(runId: number, status: string, stats: unknown, errorSummary?: string) {
-    const now = Date.now();
+  async getSyncRun(runId: number) {
+    return (
+      (
+        await this.db
+          .select()
+          .from(syncRuns)
+          .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)))
+          .limit(1)
+      )[0] ?? null
+    );
+  }
 
+  async getActiveSyncRun() {
+    return (
+      (
+        await this.db
+          .select()
+          .from(syncRuns)
+          .where(
+            and(
+              eq(syncRuns.userId, this.userId),
+              inArray(syncRuns.status, ACTIVE_SYNC_STATUSES),
+            ),
+          )
+          .orderBy(desc(syncRuns.startedAt))
+          .limit(1)
+      )[0] ?? null
+    );
+  }
+
+  async getSyncState() {
+    return (
+      (
+        await this.db
+          .select()
+          .from(syncState)
+          .where(eq(syncState.userId, this.userId))
+          .limit(1)
+      )[0] ?? null
+    );
+  }
+
+  async findResumableSyncRun(now = Date.now(), staleHeartbeatMs = 5 * 60 * 1000) {
+    const staleThreshold = now - staleHeartbeatMs;
+    return (
+      (
+        await this.db
+          .select()
+          .from(syncRuns)
+          .where(
+            and(
+              eq(syncRuns.userId, this.userId),
+              or(
+                and(
+                  inArray(syncRuns.status, [
+                    "waiting_for_youtube_quota",
+                    "waiting_for_spotify_retry",
+                  ] satisfies SyncRunLifecycleStatus[]),
+                  lt(syncRuns.nextRetryAt, now + 1),
+                ),
+                eq(syncRuns.status, "queued"),
+                and(eq(syncRuns.status, "running"), lt(syncRuns.lastHeartbeatAt, staleThreshold)),
+              ),
+            ),
+          )
+          .orderBy(desc(syncRuns.startedAt))
+          .limit(1)
+      )[0] ?? null
+    );
+  }
+
+  async markSyncRunRunning(runId: number, phase: SyncRunPhase, statusMessage?: string | null) {
+    const now = Date.now();
+    await this.db
+      .update(syncRuns)
+      .set({
+        status: "running",
+        phase,
+        statusMessage: statusMessage ?? null,
+        nextRetryAt: null,
+        pauseReason: null,
+        lastHeartbeatAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)));
+
+    await this.upsertSyncState({
+      activeRunId: runId,
+      lastHeartbeatAt: now,
+      lastStartedSyncAt: now,
+    });
+  }
+
+  async updateSyncRun(runId: number, input: {
+    status?: SyncRunLifecycleStatus;
+    phase?: SyncRunPhase | null;
+    statusMessage?: string | null;
+    progress?: Partial<SyncProgressSnapshot>;
+    nextRetryAt?: number | null;
+    pauseReason?: string | null;
+    lastErrorSummary?: string | null;
+    spotifyScanOffset?: number | null;
+    spotifyScanCompletedAt?: number | null;
+    playlistSnapshotCompletedAt?: number | null;
+  }) {
+    const now = Date.now();
+    await this.db
+      .update(syncRuns)
+      .set({
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.phase !== undefined ? { phase: input.phase } : {}),
+        ...(input.statusMessage !== undefined ? { statusMessage: input.statusMessage } : {}),
+        ...(input.progress?.totalTracks !== undefined ? { totalTracks: input.progress.totalTracks } : {}),
+        ...(input.progress?.completedTracks !== undefined ? { completedTracks: input.progress.completedTracks } : {}),
+        ...(input.progress?.remainingTracks !== undefined ? { remainingTracks: input.progress.remainingTracks } : {}),
+        ...(input.progress?.currentSpotifyTrackId !== undefined ? { currentSpotifyTrackId: input.progress.currentSpotifyTrackId } : {}),
+        ...(input.progress?.currentTrackName !== undefined ? { currentTrackName: input.progress.currentTrackName } : {}),
+        ...(input.nextRetryAt !== undefined ? { nextRetryAt: input.nextRetryAt } : {}),
+        ...(input.pauseReason !== undefined ? { pauseReason: input.pauseReason } : {}),
+        ...(input.lastErrorSummary !== undefined ? { lastErrorSummary: input.lastErrorSummary } : {}),
+        ...(input.spotifyScanOffset !== undefined ? { spotifyScanOffset: input.spotifyScanOffset } : {}),
+        ...(input.spotifyScanCompletedAt !== undefined ? { spotifyScanCompletedAt: input.spotifyScanCompletedAt } : {}),
+        ...(input.playlistSnapshotCompletedAt !== undefined ? { playlistSnapshotCompletedAt: input.playlistSnapshotCompletedAt } : {}),
+        lastHeartbeatAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)));
+
+    await this.upsertSyncState({
+      activeRunId: input.status && !ACTIVE_SYNC_STATUSES.includes(input.status) ? null : runId,
+      lastHeartbeatAt: now,
+      ...(input.spotifyScanOffset !== undefined ? { spotifyScanOffset: input.spotifyScanOffset } : {}),
+      ...(input.lastErrorSummary !== undefined ? { lastError: input.lastErrorSummary } : {}),
+    });
+  }
+
+  async pauseSyncRun(
+    runId: number,
+    status: Extract<SyncRunLifecycleStatus, "waiting_for_youtube_quota" | "waiting_for_spotify_retry" | "needs_reauth">,
+    input: {
+      phase: SyncRunPhase;
+      statusMessage: string;
+      nextRetryAt?: number | null;
+      pauseReason?: string | null;
+      errorSummary?: string | null;
+      currentSpotifyTrackId?: string | null;
+      currentTrackName?: string | null;
+    },
+  ) {
+    await this.updateSyncRun(runId, {
+      status,
+      phase: input.phase,
+      statusMessage: input.statusMessage,
+      progress: {
+        ...(input.currentSpotifyTrackId !== undefined ? { currentSpotifyTrackId: input.currentSpotifyTrackId } : {}),
+        ...(input.currentTrackName !== undefined ? { currentTrackName: input.currentTrackName } : {}),
+      },
+      nextRetryAt: input.nextRetryAt ?? null,
+      pauseReason: input.pauseReason ?? null,
+      lastErrorSummary: input.errorSummary ?? null,
+    });
+  }
+
+  async finishSyncRun(
+    runId: number,
+    status: SyncRunLifecycleStatus | "success" | "quota_exhausted",
+    stats: unknown,
+    errorSummary?: string,
+  ) {
+    const now = Date.now();
+    const normalizedStatus = normalizeRunStatus(status);
+
+    await this.refreshSyncRunProgress(runId);
+
+    const run = await this.getSyncRun(runId);
     await this.db.transaction(async (tx: any) => {
       await tx
         .update(syncRuns)
         .set({
-          status,
+          status: normalizedStatus,
+          phase: normalizedStatus === "completed" || normalizedStatus === "partially_completed" ? "completed" : "failed",
           finishedAt: now,
+          nextRetryAt: null,
+          pauseReason: null,
           statsJson: stats,
           errorSummary: errorSummary ?? null,
+          lastErrorSummary: errorSummary ?? null,
+          currentSpotifyTrackId: null,
+          currentTrackName: null,
+          lastHeartbeatAt: now,
+          updatedAt: now,
         })
         .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)));
 
@@ -466,19 +703,38 @@ export class AppStore {
         .insert(syncState)
         .values({
           userId: this.userId,
-          lastStartedSyncAt: null,
-          lastSuccessfulSyncAt: status === "success" ? now : null,
-          lastFailedSyncAt: status === "success" ? null : now,
+          lastStartedSyncAt: run?.startedAt ?? now,
+          lastSuccessfulSyncAt:
+            normalizedStatus === "completed" || normalizedStatus === "partially_completed" ? now : null,
+          lastFailedSyncAt:
+            normalizedStatus === "completed" || normalizedStatus === "partially_completed" ? null : now,
+          activeRunId: null,
+          lastHeartbeatAt: now,
           spotifyScanOffset: null,
-          lastError: errorSummary ?? null,
+          lastError:
+            normalizedStatus === "completed" || normalizedStatus === "partially_completed"
+              ? null
+              : errorSummary ?? null,
           updatedAt: now,
         })
         .onConflictDoUpdate({
           target: syncState.userId,
           set: {
-            lastSuccessfulSyncAt: status === "success" ? now : syncState.lastSuccessfulSyncAt,
-            lastFailedSyncAt: status === "success" ? syncState.lastFailedSyncAt : now,
-            lastError: status === "success" ? null : errorSummary ?? null,
+            lastSuccessfulSyncAt:
+              normalizedStatus === "completed" || normalizedStatus === "partially_completed"
+                ? now
+                : syncState.lastSuccessfulSyncAt,
+            lastFailedSyncAt:
+              normalizedStatus === "completed" || normalizedStatus === "partially_completed"
+                ? syncState.lastFailedSyncAt
+                : now,
+            activeRunId: null,
+            lastHeartbeatAt: now,
+            spotifyScanOffset: null,
+            lastError:
+              normalizedStatus === "completed" || normalizedStatus === "partially_completed"
+                ? null
+                : errorSummary ?? null,
             updatedAt: now,
           },
         });
@@ -492,6 +748,354 @@ export class AppStore {
       .where(eq(syncRuns.userId, this.userId))
       .orderBy(desc(syncRuns.startedAt))
       .limit(limit);
+  }
+
+  async saveSyncRunStats(runId: number, stats: unknown) {
+    await this.db
+      .update(syncRuns)
+      .set({
+        statsJson: stats,
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(syncRuns.userId, this.userId), eq(syncRuns.id, runId)));
+  }
+
+  async appendSyncRunEvent(input: {
+    syncRunId: number;
+    level: SyncEventLevel;
+    stage: string;
+    message: string;
+    spotifyTrackId?: string | null;
+    payload?: unknown;
+  }) {
+    const now = Date.now();
+    await this.db.insert(syncRunEvents).values({
+      userId: this.userId,
+      syncRunId: input.syncRunId,
+      level: input.level,
+      stage: input.stage,
+      message: input.message,
+      spotifyTrackId: input.spotifyTrackId ?? null,
+      payloadJson: sanitizeSyncPayload(input.payload),
+      createdAt: now,
+    });
+  }
+
+  async listSyncRunEvents(syncRunId: number, limit = 30) {
+    return this.db
+      .select()
+      .from(syncRunEvents)
+      .where(and(eq(syncRunEvents.userId, this.userId), eq(syncRunEvents.syncRunId, syncRunId)))
+      .orderBy(desc(syncRunEvents.createdAt))
+      .limit(limit);
+  }
+
+  async upsertSyncRunTrackFromSpotify(input: SyncRunTrackUpsertInput) {
+    const existingTrack = await this.getTrackBySpotifyId(input.track.spotifyTrackId);
+    const now = Date.now();
+
+    await this.db.transaction(async (tx: any) => {
+      await tx
+        .insert(syncRunTracks)
+        .values({
+          id: randomUUID(),
+          userId: this.userId,
+          syncRunId: input.syncRunId,
+          spotifyTrackId: input.track.spotifyTrackId,
+          trackOrder: input.trackOrder,
+          status: "discovered",
+          statusMessage: "Spotify에서 인식됨",
+          trackName: input.track.name,
+          artistNamesJson: JSON.stringify(input.track.artistNames),
+          albumName: input.track.albumName,
+          albumReleaseDate: input.track.albumReleaseDate,
+          durationMs: input.track.durationMs,
+          isrc: input.track.isrc,
+          externalUrl: input.track.externalUrl,
+          spotifyAddedAt: input.track.addedAt,
+          manualVideoId: existingTrack?.manualVideoId ?? null,
+          manualResolutionType: existingTrack?.manualResolutionType ?? null,
+          matchedVideoId: existingTrack?.matchedVideoId ?? null,
+          matchedVideoTitle: existingTrack?.matchedVideoTitle ?? null,
+          matchedChannelTitle: existingTrack?.matchedChannelTitle ?? null,
+          matchedScore: existingTrack?.matchedScore ?? null,
+          matchedSource: existingTrack?.matchedSource ?? null,
+          reviewVideoId: existingTrack?.reviewVideoId ?? null,
+          reviewVideoTitle: existingTrack?.reviewVideoTitle ?? null,
+          reviewChannelTitle: existingTrack?.reviewChannelTitle ?? null,
+          reviewVideoUrl: existingTrack?.reviewVideoUrl ?? null,
+          reviewSource: existingTrack?.reviewSource ?? null,
+          reviewScore: existingTrack?.reviewScore ?? null,
+          reviewReasonsJson: existingTrack?.reviewReasonsJson ?? null,
+          playlistItemId: existingTrack?.playlistVideoId ?? null,
+          attemptCount: 0,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [syncRunTracks.userId, syncRunTracks.syncRunId, syncRunTracks.spotifyTrackId],
+          set: {
+            trackOrder: input.trackOrder,
+            trackName: input.track.name,
+            artistNamesJson: JSON.stringify(input.track.artistNames),
+            albumName: input.track.albumName,
+            albumReleaseDate: input.track.albumReleaseDate,
+            durationMs: input.track.durationMs,
+            isrc: input.track.isrc,
+            externalUrl: input.track.externalUrl,
+            spotifyAddedAt: input.track.addedAt,
+            manualVideoId: existingTrack?.manualVideoId ?? null,
+            manualResolutionType: existingTrack?.manualResolutionType ?? null,
+            matchedVideoId: existingTrack?.matchedVideoId ?? null,
+            matchedVideoTitle: existingTrack?.matchedVideoTitle ?? null,
+            matchedChannelTitle: existingTrack?.matchedChannelTitle ?? null,
+            matchedScore: existingTrack?.matchedScore ?? null,
+            matchedSource: existingTrack?.matchedSource ?? null,
+            reviewVideoId: existingTrack?.reviewVideoId ?? null,
+            reviewVideoTitle: existingTrack?.reviewVideoTitle ?? null,
+            reviewChannelTitle: existingTrack?.reviewChannelTitle ?? null,
+            reviewVideoUrl: existingTrack?.reviewVideoUrl ?? null,
+            reviewSource: existingTrack?.reviewSource ?? null,
+            reviewScore: existingTrack?.reviewScore ?? null,
+            reviewReasonsJson: existingTrack?.reviewReasonsJson ?? null,
+            playlistItemId: existingTrack?.playlistVideoId ?? null,
+            updatedAt: now,
+          },
+        });
+
+      await tx
+        .insert(trackMappings)
+        .values({
+          id: randomUUID(),
+          userId: this.userId,
+          spotifyTrackId: input.track.spotifyTrackId,
+          spotifyAddedAt: input.track.addedAt,
+          spotifyRemovedAt: null,
+          trackName: input.track.name,
+          artistNamesJson: JSON.stringify(input.track.artistNames),
+          albumName: input.track.albumName,
+          albumReleaseDate: input.track.albumReleaseDate,
+          durationMs: input.track.durationMs,
+          isrc: input.track.isrc,
+          externalUrl: input.track.externalUrl,
+          searchStatus: "pending",
+          searchAttempts: existingTrack?.searchAttempts ?? 0,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [trackMappings.userId, trackMappings.spotifyTrackId],
+          set: {
+            spotifyAddedAt: input.track.addedAt,
+            spotifyRemovedAt: null,
+            trackName: input.track.name,
+            artistNamesJson: JSON.stringify(input.track.artistNames),
+            albumName: input.track.albumName,
+            albumReleaseDate: input.track.albumReleaseDate,
+            durationMs: input.track.durationMs,
+            isrc: input.track.isrc,
+            externalUrl: input.track.externalUrl,
+            updatedAt: now,
+          },
+        });
+    });
+
+    return {
+      isNewTrack: existingTrack === null,
+    };
+  }
+
+  async finalizeSpotifyRunSnapshot(syncRunId: number) {
+    const now = Date.now();
+    const discoveredTracks = await this.db
+      .select({ spotifyTrackId: syncRunTracks.spotifyTrackId })
+      .from(syncRunTracks)
+      .where(and(eq(syncRunTracks.userId, this.userId), eq(syncRunTracks.syncRunId, syncRunId)));
+
+    const currentIds = new Set(discoveredTracks.map((row: { spotifyTrackId: string }) => row.spotifyTrackId));
+    const existing = await this.db
+      .select({
+        spotifyTrackId: trackMappings.spotifyTrackId,
+        spotifyRemovedAt: trackMappings.spotifyRemovedAt,
+      })
+      .from(trackMappings)
+      .where(eq(trackMappings.userId, this.userId));
+
+    let removedFromSpotify = 0;
+    for (const row of existing) {
+      if (currentIds.has(row.spotifyTrackId) || row.spotifyRemovedAt) {
+        continue;
+      }
+
+      removedFromSpotify += 1;
+      await this.db
+        .update(trackMappings)
+        .set({
+          spotifyRemovedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(trackMappings.userId, this.userId),
+            eq(trackMappings.spotifyTrackId, row.spotifyTrackId),
+          ),
+        );
+    }
+
+    await this.updateSyncRun(syncRunId, {
+      spotifyScanCompletedAt: now,
+      spotifyScanOffset: currentIds.size,
+    });
+
+    return {
+      scannedSpotifyTracks: currentIds.size,
+      removedFromSpotify,
+    };
+  }
+
+  async listSyncRunTracks(
+    syncRunId: number,
+    input: {
+      page?: number;
+      pageSize?: number;
+      filter?: SyncRunTrackStatus | "active" | "all";
+    } = {},
+  ) {
+    const page = Math.max(1, input.page ?? 1);
+    const pageSize = Math.max(1, Math.min(100, input.pageSize ?? 50));
+    const offset = (page - 1) * pageSize;
+    const filter = input.filter ?? "all";
+
+    const rows = await this.db
+      .select()
+      .from(syncRunTracks)
+      .where(
+        and(
+          eq(syncRunTracks.userId, this.userId),
+          eq(syncRunTracks.syncRunId, syncRunId),
+          buildRunTrackFilter(filter),
+        ),
+      )
+      .orderBy(asc(syncRunTracks.trackOrder))
+      .limit(pageSize)
+      .offset(offset);
+
+    return rows.map((row: any) => ({
+      ...row,
+      artistNames: JSON.parse(row.artistNamesJson) as string[],
+      reviewReasons: parseReviewReasons(row.reviewReasonsJson),
+    }));
+  }
+
+  async listAllSyncRunTracks(syncRunId: number) {
+    const rows = await this.db
+      .select()
+      .from(syncRunTracks)
+      .where(and(eq(syncRunTracks.userId, this.userId), eq(syncRunTracks.syncRunId, syncRunId)))
+      .orderBy(asc(syncRunTracks.trackOrder));
+
+    return rows.map((row: any) => ({
+      ...row,
+      artistNames: JSON.parse(row.artistNamesJson) as string[],
+      reviewReasons: parseReviewReasons(row.reviewReasonsJson),
+    }));
+  }
+
+  async getSyncRunTrack(syncRunId: number, spotifyTrackId: string) {
+    return (
+      (
+        await this.db
+          .select()
+          .from(syncRunTracks)
+          .where(
+            and(
+              eq(syncRunTracks.userId, this.userId),
+              eq(syncRunTracks.syncRunId, syncRunId),
+              eq(syncRunTracks.spotifyTrackId, spotifyTrackId),
+            ),
+          )
+          .limit(1)
+      )[0] ?? null
+    );
+  }
+
+  async updateSyncRunTrack(syncRunId: number, spotifyTrackId: string, patch: SyncRunTrackPatch) {
+    const now = Date.now();
+    await this.db
+      .update(syncRunTracks)
+      .set({
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.statusMessage !== undefined ? { statusMessage: patch.statusMessage } : {}),
+        ...(patch.matchedVideoId !== undefined ? { matchedVideoId: patch.matchedVideoId } : {}),
+        ...(patch.matchedVideoTitle !== undefined ? { matchedVideoTitle: patch.matchedVideoTitle } : {}),
+        ...(patch.matchedChannelTitle !== undefined ? { matchedChannelTitle: patch.matchedChannelTitle } : {}),
+        ...(patch.matchedScore !== undefined ? { matchedScore: patch.matchedScore } : {}),
+        ...(patch.matchedSource !== undefined ? { matchedSource: patch.matchedSource } : {}),
+        ...(patch.reviewVideoId !== undefined ? { reviewVideoId: patch.reviewVideoId } : {}),
+        ...(patch.reviewVideoTitle !== undefined ? { reviewVideoTitle: patch.reviewVideoTitle } : {}),
+        ...(patch.reviewChannelTitle !== undefined ? { reviewChannelTitle: patch.reviewChannelTitle } : {}),
+        ...(patch.reviewVideoUrl !== undefined ? { reviewVideoUrl: patch.reviewVideoUrl } : {}),
+        ...(patch.reviewSource !== undefined ? { reviewSource: patch.reviewSource } : {}),
+        ...(patch.reviewScore !== undefined ? { reviewScore: patch.reviewScore } : {}),
+        ...(patch.reviewReasonsJson !== undefined ? { reviewReasonsJson: patch.reviewReasonsJson } : {}),
+        ...(patch.manualVideoId !== undefined ? { manualVideoId: patch.manualVideoId } : {}),
+        ...(patch.manualResolutionType !== undefined ? { manualResolutionType: patch.manualResolutionType } : {}),
+        ...(patch.playlistItemId !== undefined ? { playlistItemId: patch.playlistItemId } : {}),
+        ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
+        ...(patch.incrementAttemptCount ? { attemptCount: sql`${syncRunTracks.attemptCount} + 1` } : {}),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(syncRunTracks.userId, this.userId),
+          eq(syncRunTracks.syncRunId, syncRunId),
+          eq(syncRunTracks.spotifyTrackId, spotifyTrackId),
+        ),
+      );
+  }
+
+  async listProcessableSyncRunTracks(syncRunId: number) {
+    return this.db
+      .select()
+      .from(syncRunTracks)
+      .where(
+        and(
+          eq(syncRunTracks.userId, this.userId),
+          eq(syncRunTracks.syncRunId, syncRunId),
+          sql`${syncRunTracks.status} NOT IN (${sql.join(TERMINAL_RUN_TRACK_STATUSES.map((status) => sql`${status}`), sql`, `)})`,
+        ),
+      )
+      .orderBy(asc(syncRunTracks.trackOrder));
+  }
+
+  async refreshSyncRunProgress(syncRunId: number) {
+    const rows = await this.db
+      .select({
+        status: syncRunTracks.status,
+      })
+      .from(syncRunTracks)
+      .where(and(eq(syncRunTracks.userId, this.userId), eq(syncRunTracks.syncRunId, syncRunId)));
+
+    const totalTracks = rows.length;
+    const completedTracks = rows.filter((row: any) =>
+      TERMINAL_RUN_TRACK_STATUSES.includes(row.status as SyncRunTrackStatus),
+    ).length;
+    const remainingTracks = Math.max(0, totalTracks - completedTracks);
+
+    await this.updateSyncRun(syncRunId, {
+      progress: {
+        totalTracks,
+        completedTracks,
+        remainingTracks,
+      },
+    });
+
+    return {
+      totalTracks,
+      completedTracks,
+      remainingTracks,
+    };
   }
 
   async saveSpotifySnapshot(tracks: SpotifyTrack[]) {
@@ -850,6 +1454,44 @@ export class AppStore {
     return nextValue;
   }
 
+  async countSyncRunTracks(
+    syncRunId: number,
+    filter: SyncRunTrackStatus | "active" | "all" = "all",
+  ) {
+    const rows = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(syncRunTracks)
+      .where(
+        and(
+          eq(syncRunTracks.userId, this.userId),
+          eq(syncRunTracks.syncRunId, syncRunId),
+          buildRunTrackFilter(filter),
+        ),
+      );
+
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async getDashboardLiveData() {
+    const summary = await this.getDashboardSummary();
+    const activeRun = summary.activeRun;
+    if (!activeRun) {
+      return {
+        ...summary,
+        activeRunUpdatedAt: null,
+        activeRunTracks: [],
+        activeRunEvents: [],
+      };
+    }
+
+    return {
+      ...summary,
+      activeRunUpdatedAt: activeRun.updatedAt ?? activeRun.lastHeartbeatAt ?? activeRun.startedAt,
+      activeRunTracks: await this.listSyncRunTracks(activeRun.id, { page: 1, pageSize: 50 }),
+      activeRunEvents: await this.listSyncRunEvents(activeRun.id, 20),
+    };
+  }
+
   async getDashboardSummary() {
     const oauth = await this.listOAuthAccounts();
     const recentRuns = await this.listRecentSyncRuns(10);
@@ -879,15 +1521,55 @@ export class AppStore {
       lastSyncedAt: track.lastSyncedAt,
       updatedAt: track.updatedAt,
     }));
+    const activeRun = await this.getActiveSyncRun();
 
     return {
       spotifyConnected: oauth.some((account: any) => account.provider === "spotify" && !account.invalidatedAt),
       youtubeConnected: oauth.some((account: any) => account.provider === "youtube" && !account.invalidatedAt),
       playlistId: await this.getManagedPlaylistId(),
       lastRunAt: recentRuns[0]?.finishedAt ?? recentRuns[0]?.startedAt ?? null,
+      activeRun,
       recentRuns,
       attentionTracks,
     };
+  }
+
+  private async upsertSyncState(input: {
+    lastStartedSyncAt?: number | null;
+    lastSuccessfulSyncAt?: number | null;
+    lastFailedSyncAt?: number | null;
+    activeRunId?: number | null;
+    lastHeartbeatAt?: number | null;
+    spotifyScanOffset?: number | null;
+    lastError?: string | null;
+  }) {
+    const now = Date.now();
+    await this.db
+      .insert(syncState)
+      .values({
+        userId: this.userId,
+        lastStartedSyncAt: input.lastStartedSyncAt ?? null,
+        lastSuccessfulSyncAt: input.lastSuccessfulSyncAt ?? null,
+        lastFailedSyncAt: input.lastFailedSyncAt ?? null,
+        activeRunId: input.activeRunId ?? null,
+        lastHeartbeatAt: input.lastHeartbeatAt ?? null,
+        spotifyScanOffset: input.spotifyScanOffset ?? null,
+        lastError: input.lastError ?? null,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: syncState.userId,
+        set: {
+          ...(input.lastStartedSyncAt !== undefined ? { lastStartedSyncAt: input.lastStartedSyncAt } : {}),
+          ...(input.lastSuccessfulSyncAt !== undefined ? { lastSuccessfulSyncAt: input.lastSuccessfulSyncAt } : {}),
+          ...(input.lastFailedSyncAt !== undefined ? { lastFailedSyncAt: input.lastFailedSyncAt } : {}),
+          ...(input.activeRunId !== undefined ? { activeRunId: input.activeRunId } : {}),
+          ...(input.lastHeartbeatAt !== undefined ? { lastHeartbeatAt: input.lastHeartbeatAt } : {}),
+          ...(input.spotifyScanOffset !== undefined ? { spotifyScanOffset: input.spotifyScanOffset } : {}),
+          ...(input.lastError !== undefined ? { lastError: input.lastError } : {}),
+          updatedAt: now,
+        },
+      });
   }
 }
 
@@ -902,4 +1584,47 @@ function parseReviewReasons(raw: string | null) {
   } catch {
     return [];
   }
+}
+
+function sanitizeSyncPayload(payload: unknown) {
+  if (payload == null) {
+    return null;
+  }
+
+  try {
+    const text = JSON.stringify(payload);
+    if (text.length <= 1200) {
+      return JSON.parse(text) as unknown;
+    }
+
+    return {
+      truncated: true,
+      preview: text.slice(0, 1200),
+    };
+  } catch {
+    return String(payload).slice(0, 1200);
+  }
+}
+
+function normalizeRunStatus(status: SyncRunLifecycleStatus | "success" | "quota_exhausted"): SyncRunLifecycleStatus {
+  switch (status) {
+    case "success":
+      return "completed";
+    case "quota_exhausted":
+      return "waiting_for_youtube_quota";
+    default:
+      return status;
+  }
+}
+
+function buildRunTrackFilter(filter: SyncRunTrackStatus | "active" | "all") {
+  if (filter === "all") {
+    return sql`1 = 1`;
+  }
+
+  if (filter === "active") {
+    return sql`${syncRunTracks.status} NOT IN (${sql.join(TERMINAL_RUN_TRACK_STATUSES.map((status) => sql`${status}`), sql`, `)})`;
+  }
+
+  return eq(syncRunTracks.status, filter);
 }

@@ -8,6 +8,66 @@ export type TrackSearchStatus =
   | "failed";
 export type ManualResolutionType = "recommended" | "manual_input";
 
+export type SyncRunLifecycleStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_youtube_quota"
+  | "waiting_for_spotify_retry"
+  | "needs_reauth"
+  | "partially_completed"
+  | "completed"
+  | "failed";
+
+export type SyncRunPhase =
+  | "queued"
+  | "scanning_spotify"
+  | "loading_youtube_playlist"
+  | "processing_tracks"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export type SyncRunTrackStatus =
+  | "discovered"
+  | "searching"
+  | "matched"
+  | "review_required"
+  | "ready_to_insert"
+  | "inserting"
+  | "inserted"
+  | "skipped_existing"
+  | "waiting_for_youtube_quota"
+  | "waiting_for_spotify_retry"
+  | "needs_reauth"
+  | "no_match"
+  | "failed";
+
+export type SyncEventLevel = "info" | "warn" | "error";
+
+export interface SyncRunStats {
+  scannedSpotifyTracks: number;
+  newlySeenTracks: number;
+  removedFromSpotify: number;
+  playlistItemsSeen: number;
+  queuedTracks: number;
+  insertedTracks: number;
+  skippedAlreadyInPlaylist: number;
+  reusedCachedMatches: number;
+  manualOverridesApplied: number;
+  reviewRequiredCount: number;
+  noMatchCount: number;
+  failedCount: number;
+  quotaAbort: boolean;
+}
+
+export interface SyncProgressSnapshot {
+  totalTracks: number;
+  completedTracks: number;
+  remainingTracks: number;
+  currentSpotifyTrackId: string | null;
+  currentTrackName: string | null;
+}
+
 export interface SpotifyTrack {
   spotifyTrackId: string;
   name: string;
@@ -47,27 +107,11 @@ export interface MatchDecision {
   all: MatchResult[];
 }
 
-export interface SyncStats {
-  scannedSpotifyTracks: number;
-  newlySeenTracks: number;
-  removedFromSpotify: number;
-  playlistItemsSeen: number;
-  queuedTracks: number;
-  insertedTracks: number;
-  skippedAlreadyInPlaylist: number;
-  reusedCachedMatches: number;
-  manualOverridesApplied: number;
-  reviewRequiredCount: number;
-  noMatchCount: number;
-  failedCount: number;
-  quotaAbort: boolean;
-}
-
-export type SyncRunStatus = "success" | "quota_exhausted";
+export type SyncStats = SyncRunStats;
 
 export interface SyncRunResult {
   runId: number;
-  status: SyncRunStatus;
+  status: SyncRunLifecycleStatus;
   stats: SyncStats;
   error?: string;
 }

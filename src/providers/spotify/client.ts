@@ -23,6 +23,7 @@ interface SpotifyProfileResponse {
 }
 
 interface SpotifySavedTracksResponse {
+  total?: number;
   items: Array<{
     added_at: string;
     track: {
@@ -91,43 +92,58 @@ export class SpotifyClient {
 
   async getAllSavedTracks(accessToken: string) {
     const tracks: SpotifyTrack[] = [];
-    let url: URL | null = new URL(`${API_BASE_URL}/me/tracks`);
-    url.searchParams.set("limit", String(this.config.SPOTIFY_PAGE_SIZE));
-    url.searchParams.set("offset", "0");
+    let offset = 0;
 
-    while (url) {
-      const response: SpotifySavedTracksResponse = await requestJson<SpotifySavedTracksResponse>(
-        url.toString(),
-        {
+    while (true) {
+      const page = await this.getSavedTracksPage(accessToken, offset, this.config.SPOTIFY_PAGE_SIZE);
+      tracks.push(...page.items);
+      if (!page.nextOffset) {
+        break;
+      }
+      offset = page.nextOffset;
+    }
+
+    return tracks;
+  }
+
+  async getSavedTracksPage(accessToken: string, offset: number, limit = this.config.SPOTIFY_PAGE_SIZE) {
+    const url = new URL(`${API_BASE_URL}/me/tracks`);
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("offset", String(offset));
+
+    const response: SpotifySavedTracksResponse = await requestJson<SpotifySavedTracksResponse>(
+      url.toString(),
+      {
         provider: "spotify",
         headers: {
           authorization: `Bearer ${accessToken}`,
         },
       },
-      );
+    );
 
-      for (const item of response.items) {
-        if (!item.track.id) {
-          continue;
-        }
-
-        tracks.push({
-          spotifyTrackId: item.track.id,
-          name: item.track.name,
-          artistNames: item.track.artists.map((artist: { name: string }) => artist.name),
-          albumName: item.track.album.name,
-          albumReleaseDate: item.track.album.release_date ?? null,
-          durationMs: item.track.duration_ms,
-          isrc: item.track.external_ids?.isrc ?? null,
-          addedAt: new Date(item.added_at).getTime(),
-          externalUrl: item.track.external_urls?.spotify ?? null,
-        });
+    const items = response.items.flatMap((item) => {
+      if (!item.track.id) {
+        return [];
       }
 
-      url = response.next ? new URL(response.next) : null;
-    }
+      return [{
+        spotifyTrackId: item.track.id,
+        name: item.track.name,
+        artistNames: item.track.artists.map((artist: { name: string }) => artist.name),
+        albumName: item.track.album.name,
+        albumReleaseDate: item.track.album.release_date ?? null,
+        durationMs: item.track.duration_ms,
+        isrc: item.track.external_ids?.isrc ?? null,
+        addedAt: new Date(item.added_at).getTime(),
+        externalUrl: item.track.external_urls?.spotify ?? null,
+      } satisfies SpotifyTrack];
+    });
 
-    return tracks;
+    return {
+      items,
+      total: response.total ?? offset + items.length,
+      nextOffset: response.next ? offset + limit : null,
+    };
   }
 
   private async requestToken(payload: Record<string, string>) {

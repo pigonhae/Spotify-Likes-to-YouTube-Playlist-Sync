@@ -1,5 +1,5 @@
 import { TokenCipher } from "../lib/crypto.js";
-import { AppError } from "../lib/errors.js";
+import { AppError, ExternalApiError, ReauthRequiredError } from "../lib/errors.js";
 import { SpotifyClient } from "../providers/spotify/client.js";
 import { YouTubeClient } from "../providers/youtube/client.js";
 import type { AppConfig } from "../config.js";
@@ -82,7 +82,7 @@ export class OAuthService {
     }
 
     if (account.invalidatedAt) {
-      throw new AppError(`${provider} account needs to be reconnected`, 400);
+      throw new ReauthRequiredError(provider, `${provider} account needs to be reconnected`);
     }
 
     if (!account.tokenExpiresAt || account.tokenExpiresAt > Date.now()) {
@@ -95,7 +95,7 @@ export class OAuthService {
 
     if (!refreshToken) {
       await this.store.markOAuthAccountInvalid(provider, "Missing refresh token");
-      throw new AppError(`${provider} account cannot be refreshed`, 400);
+      throw new ReauthRequiredError(provider, `${provider} account cannot be refreshed`, "missing_refresh_token");
     }
 
     try {
@@ -130,8 +130,36 @@ export class OAuthService {
       return refreshed.access_token;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.store.markOAuthAccountInvalid(provider, message);
+      if (isReauthError(error)) {
+        await this.store.markOAuthAccountInvalid(provider, message);
+        throw new ReauthRequiredError(provider, `${provider} account refresh failed: ${message}`, getReasonCode(error));
+      }
+
       throw new AppError(`${provider} account refresh failed: ${message}`, 400);
     }
   }
+}
+
+function isReauthError(error: unknown) {
+  if (error instanceof ReauthRequiredError) {
+    return true;
+  }
+
+  if (error instanceof ExternalApiError) {
+    return error.status === 401 || error.reasonCode === "invalid_grant" || error.reasonCode === "invalid_token";
+  }
+
+  return false;
+}
+
+function getReasonCode(error: unknown) {
+  if (error instanceof ReauthRequiredError) {
+    return error.reasonCode;
+  }
+
+  if (error instanceof ExternalApiError) {
+    return error.reasonCode;
+  }
+
+  return undefined;
 }

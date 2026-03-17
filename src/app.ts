@@ -11,6 +11,7 @@ import { registerRoutes } from "./routes/index.js";
 import { AccountManagementService } from "./services/account-management-service.js";
 import { OAuthService } from "./services/oauth-service.js";
 import { QuotaService } from "./services/quota-service.js";
+import { ResumeScheduler } from "./services/sync/resume-scheduler.js";
 import { SyncService } from "./services/sync/sync-service.js";
 import { TrackReviewService } from "./services/track-review-service.js";
 
@@ -88,12 +89,16 @@ export async function buildApp() {
     accountManagementService,
   };
 
+  const resumeScheduler = new ResumeScheduler(syncService, app.log);
+  await resumeScheduler.start();
+
   app.get("/health", async () => ({
     ok: true,
     timestamp: new Date().toISOString(),
   }));
 
   app.addHook("onClose", async () => {
+    await resumeScheduler.stop();
     await database.close();
   });
 

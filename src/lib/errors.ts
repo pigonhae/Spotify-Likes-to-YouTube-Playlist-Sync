@@ -21,14 +21,42 @@ export class ExternalApiError extends AppError {
     message: string,
     public readonly provider: string,
     public readonly status?: number,
+    public readonly bodySnippet?: string,
+    public readonly retryAfterSeconds?: number,
+    public readonly reasonCode?: string,
   ) {
     super(message, 502);
   }
 }
 
 export class QuotaExceededError extends AppError {
-  constructor(message = "YouTube quota exceeded") {
+  constructor(
+    message = "YouTube quota exceeded",
+    public readonly retryAfterSeconds?: number,
+    public readonly reasonCode?: string,
+  ) {
     super(message, 429);
+  }
+}
+
+export class RetryableSyncPauseError extends AppError {
+  constructor(
+    message: string,
+    public readonly provider: "spotify" | "youtube",
+    public readonly nextRetryAt: number,
+    public readonly reasonCode?: string,
+  ) {
+    super(message, 429);
+  }
+}
+
+export class ReauthRequiredError extends AppError {
+  constructor(
+    public readonly provider: "spotify" | "youtube",
+    message = `${provider} account needs to be reconnected`,
+    public readonly reasonCode?: string,
+  ) {
+    super(message, 401);
   }
 }
 
