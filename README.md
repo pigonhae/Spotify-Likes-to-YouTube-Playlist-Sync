@@ -1,6 +1,7 @@
 # Spotify Likes -> YouTube Playlist Sync
 
-[![Deploy on Railway](https://railway.app/button.svg)](YOUR_RAILWAY_TEMPLATE_OR_PROJECT_LINK) [![Node.js](https://img.shields.io/badge/node-22%2B-339933?logo=nodedotjs&logoColor=white)](#prerequisites)
+[![Deploy on Railway](https://railway.app/button.svg)](YOUR_RAILWAY_TEMPLATE_OR_PROJECT_LINK)
+[![Node.js](https://img.shields.io/badge/node-22%2B-339933?logo=nodedotjs&logoColor=white)](#prerequisites)
 
 Sync a single Spotify account's liked songs into one managed YouTube playlist, with PostgreSQL-backed state, manual review for ambiguous matches, resumable sync runs, and a Railway-friendly web/worker deployment model.
 
