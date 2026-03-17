@@ -44,13 +44,6 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     }
   };
 
-  const syncSecretGuard = async (request: FastifyRequest, reply: FastifyReply) => {
-    const authorization = request.headers.authorization;
-    if (authorization !== `Bearer ${context.config.SYNC_TRIGGER_SECRET}`) {
-      return reply.status(401).send({ error: "Unauthorized" });
-    }
-  };
-
   app.get("/", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const message = typeof query.message === "string" ? query.message : undefined;
@@ -239,14 +232,6 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         (result) => result.alreadySelected ? "That YouTube video is already selected." : "Manual selection saved.",
       ),
   );
-
-  app.post("/internal/sync", { onRequest: syncSecretGuard }, async () => {
-    const result = await context.syncService.run("schedule");
-    return {
-      ok: true,
-      ...result,
-    };
-  });
 }
 
 function formatSyncFlashMessage(result: { status: string }) {

@@ -34,7 +34,6 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   YOUTUBE_API_KEY: z.string().min(1),
-  SYNC_TRIGGER_SECRET: z.string().min(24),
   YOUTUBE_PLAYLIST_ID: z.preprocess(
     (value) => {
       if (typeof value === "string" && value.trim() === "") {
@@ -52,6 +51,7 @@ const envSchema = z.object({
   YOUTUBE_DAILY_QUOTA_LIMIT: z.coerce.number().int().positive().default(10_000),
   YOUTUBE_SEARCH_PROVIDER: z.enum(["hybrid", "official"]).default("hybrid"),
   SYNC_LOCK_TTL_MINUTES: z.coerce.number().int().positive().default(55),
+  SCHEDULER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SPOTIFY_PAGE_SIZE: z.coerce.number().int().min(1).max(50).default(50),
   YOUTUBE_FALLBACK_RESULT_LIMIT: z.coerce.number().int().min(3).max(15).default(5),
   MATCH_THRESHOLD: z.coerce.number().int().min(1).max(100).default(65),
@@ -75,7 +75,6 @@ export interface AppConfig {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   YOUTUBE_API_KEY: string;
-  SYNC_TRIGGER_SECRET: string;
   YOUTUBE_PLAYLIST_ID: string | undefined;
   YOUTUBE_PLAYLIST_TITLE: string;
   YOUTUBE_PLAYLIST_DESCRIPTION: string;
@@ -83,6 +82,7 @@ export interface AppConfig {
   YOUTUBE_DAILY_QUOTA_LIMIT: number;
   YOUTUBE_SEARCH_PROVIDER: "hybrid" | "official";
   SYNC_LOCK_TTL_MINUTES: number;
+  SCHEDULER_POLL_INTERVAL_MS: number;
   SPOTIFY_PAGE_SIZE: number;
   YOUTUBE_FALLBACK_RESULT_LIMIT: number;
   MATCH_THRESHOLD: number;

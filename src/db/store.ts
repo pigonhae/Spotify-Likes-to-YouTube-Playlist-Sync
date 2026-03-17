@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import type {
   ManualResolutionType,
@@ -574,6 +574,25 @@ export class AppStore {
           .limit(1)
       )[0] ?? null
     );
+  }
+
+  async hasSyncRunWithTriggerInWindow(trigger: string, startAt: number, endAt: number) {
+    return (
+      (
+        await this.db
+          .select({ id: syncRuns.id })
+          .from(syncRuns)
+          .where(
+            and(
+              eq(syncRuns.userId, this.userId),
+              eq(syncRuns.trigger, trigger),
+              gte(syncRuns.startedAt, startAt),
+              lt(syncRuns.startedAt, endAt),
+            ),
+          )
+          .limit(1)
+      )[0] ?? null
+    ) !== null;
   }
 
   async markSyncRunRunning(runId: number, phase: SyncRunPhase, statusMessage?: string | null) {

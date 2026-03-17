@@ -138,6 +138,19 @@ describe("registerRoutes", () => {
 
     await close();
   });
+
+  it("no longer exposes the GitHub Actions internal sync endpoint", async () => {
+    const { app, close } = await createTestApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/internal/sync",
+    });
+
+    expect(response.statusCode).toBe(404);
+
+    await close();
+  });
 });
 
 async function createTestApp() {
