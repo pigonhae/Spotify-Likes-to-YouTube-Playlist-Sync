@@ -107,6 +107,29 @@ describe("registerRoutes", () => {
     await close();
   });
 
+  it("renders live dashboard sections in the requested language immediately", async () => {
+    const { app, close } = await createTestApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/live?language=en",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      language: "en",
+      sections: {
+        header: expect.stringContaining("English"),
+        overview: expect.stringContaining("Playlist And Sync"),
+      },
+    });
+
+    await close();
+  });
+
   it("serves paginated sync run tracks for live polling", async () => {
     const { app, store, close } = await createTestApp();
     const runId = await store.createSyncRun("manual");
