@@ -1,0 +1,20 @@
+name: Hourly Playlist Sync
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Railway sync endpoint
+        env:
+          INTERNAL_SYNC_URL: ${{ secrets.INTERNAL_SYNC_URL }}
+          SYNC_TRIGGER_SECRET: ${{ secrets.SYNC_TRIGGER_SECRET }}
+        run: |
+          curl --fail --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${SYNC_TRIGGER_SECRET}" \
+            "${INTERNAL_SYNC_URL}"
