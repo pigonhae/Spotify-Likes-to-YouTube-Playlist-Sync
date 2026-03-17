@@ -1,11 +1,15 @@
 import { escapeHtml } from "../lib/strings.js";
+import type { SyncStats } from "../types.js";
 
 type MessageLevel = "success" | "error";
+
+type DashboardSummary = ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>;
+type DashboardRun = DashboardSummary["recentRuns"][number];
 
 export function renderDashboard(input: {
   message?: string;
   messageLevel?: MessageLevel;
-  summary: ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>;
+  summary: DashboardSummary;
   accounts: Array<{
     provider: string;
     externalDisplayName: string | null;
@@ -41,8 +45,13 @@ export function renderDashboard(input: {
         --danger-line: #f0b7b1;
         --success-bg: #eef8f4;
         --success-line: #b7dccd;
+        --soft-bg: #faf7f1;
       }
       * { box-sizing: border-box; }
+      html, body {
+        max-width: 100%;
+        overflow-x: hidden;
+      }
       body {
         margin: 0;
         font-family: "Segoe UI", sans-serif;
@@ -53,16 +62,19 @@ export function renderDashboard(input: {
         max-width: 1080px;
         margin: 0 auto;
         padding: 32px 20px 56px;
+        min-width: 0;
       }
       .hero {
         display: grid;
         gap: 12px;
         margin-bottom: 24px;
+        min-width: 0;
       }
       .grid {
         display: grid;
         gap: 16px;
         grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        min-width: 0;
       }
       .panel {
         background: var(--panel);
@@ -70,6 +82,8 @@ export function renderDashboard(input: {
         border-radius: 18px;
         padding: 18px;
         box-shadow: 0 10px 35px rgba(60, 45, 20, 0.06);
+        min-width: 0;
+        overflow: hidden;
       }
       .panel.danger {
         border-color: var(--danger-line);
@@ -131,6 +145,7 @@ export function renderDashboard(input: {
         padding: 10px 0;
         border-bottom: 1px solid var(--line);
         vertical-align: top;
+        min-width: 0;
       }
       small, .muted {
         color: var(--muted);
@@ -162,10 +177,123 @@ export function renderDashboard(input: {
         background: #faf7f1;
         border: 1px solid var(--line);
       }
+      .runs {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+      }
+      .run-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.68);
+        min-width: 0;
+        overflow: hidden;
+      }
+      .run-card-head {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        min-width: 0;
+      }
+      .run-card-head > div {
+        min-width: 0;
+      }
+      .run-meta {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        min-width: 0;
+      }
+      .run-meta-item {
+        min-width: 0;
+      }
+      .run-meta-label {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .run-meta-value {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .run-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+      }
+      .run-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f4efe5;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .run-tag.error {
+        background: #fff0ef;
+        color: var(--danger);
+      }
+      .run-details {
+        margin-top: 12px;
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+      .run-disclosure {
+        min-width: 0;
+      }
+      .run-disclosure summary {
+        cursor: pointer;
+        font-weight: 700;
+        color: var(--ink);
+      }
+      .run-disclosure summary::-webkit-details-marker {
+        display: none;
+      }
+      .run-disclosure summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 6px;
+      }
+      .run-disclosure[open] summary::before {
+        content: "▾";
+      }
+      .run-log {
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 12px;
+        background: var(--soft-bg);
+        border: 1px solid var(--line);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        max-width: 100%;
+        max-height: 260px;
+        overflow: auto;
+      }
+      .run-empty {
+        color: var(--muted);
+      }
       @media (max-width: 720px) {
         table, thead, tbody, th, td, tr { display: block; }
         th { display: none; }
         td { padding: 8px 0; }
+        .run-card-head {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -258,28 +386,13 @@ export function renderDashboard(input: {
       }
       <section class="panel" style="margin-top:16px;">
         <h2 style="margin-top:0;">최근 동기화 실행 내역</h2>
-        <table>
-          <thead>
-            <tr><th>상태</th><th>실행 방식</th><th>시작 시각</th><th>통계</th><th>오류</th></tr>
-          </thead>
-          <tbody>
-            ${
-              input.summary.recentRuns.length === 0
-                ? `<tr><td colspan="5">아직 동기화 실행 내역이 없습니다.</td></tr>`
-                : input.summary.recentRuns
-                    .map(
-                      (run) => `<tr>
-                        <td>${escapeHtml(formatRunStatus(run.status))}</td>
-                        <td>${escapeHtml(formatRunTrigger(run.trigger))}</td>
-                        <td>${escapeHtml(formatDate(run.startedAt))}</td>
-                        <td><small>${escapeHtml(run.statsJson ?? "-")}</small></td>
-                        <td><small>${escapeHtml(run.errorSummary ?? "-")}</small></td>
-                      </tr>`,
-                    )
-                    .join("")
-            }
-          </tbody>
-        </table>
+        <div class="runs">
+          ${
+            input.summary.recentRuns.length === 0
+              ? `<p class="run-empty">아직 동기화 실행 내역이 없습니다.</p>`
+              : input.summary.recentRuns.map((run) => renderRunCard(run)).join("")
+          }
+        </div>
       </section>
       <section class="panel" style="margin-top:16px;">
         <h2 style="margin-top:0;">확인이 필요한 곡</h2>
@@ -359,6 +472,47 @@ export function renderDashboard(input: {
 </html>`;
 }
 
+function renderRunCard(run: DashboardRun) {
+  const parsedStats = safeParseJson(run.statsJson);
+  const statsPreview = formatStatsPreview(parsedStats.value);
+  const statsDetails = formatStructuredLog(parsedStats.value ?? run.statsJson ?? "-");
+  const errorPreview = getPreviewText(run.errorSummary);
+  const errorDetails = formatStructuredLog(run.errorSummary ?? "-");
+
+  return `<article class="run-card">
+    <div class="run-card-head">
+      <div>
+        <div class="run-tags">
+          <span class="status ${run.status === "failed" ? "warn" : ""}">${escapeHtml(formatRunStatus(run.status))}</span>
+          <span class="run-tag">${escapeHtml(formatRunTrigger(run.trigger))}</span>
+        </div>
+      </div>
+      <div class="run-meta-item">
+        <span class="run-meta-label">시작 시각</span>
+        <div class="run-meta-value">${escapeHtml(formatDate(run.startedAt))}</div>
+      </div>
+    </div>
+    <div class="run-meta">
+      <div class="run-meta-item">
+        <span class="run-meta-label">종료 시각</span>
+        <div class="run-meta-value">${escapeHtml(run.finishedAt ? formatDate(run.finishedAt) : "실행 중")}</div>
+      </div>
+      <div class="run-meta-item">
+        <span class="run-meta-label">통계 요약</span>
+        <div class="run-meta-value">${escapeHtml(statsPreview)}</div>
+      </div>
+      <div class="run-meta-item">
+        <span class="run-meta-label">오류 요약</span>
+        <div class="run-meta-value">${escapeHtml(errorPreview)}</div>
+      </div>
+    </div>
+    <div class="run-details">
+      ${run.statsJson ? `<details class="run-disclosure"><summary>통계 상세 보기</summary><div class="run-log">${statsDetails}</div></details>` : ""}
+      ${run.errorSummary ? `<details class="run-disclosure"><summary>오류 상세 보기</summary><div class="run-log">${errorDetails}</div></details>` : ""}
+    </div>
+  </article>`;
+}
+
 function formatDate(timestamp: number | null) {
   if (!timestamp) {
     return "-";
@@ -415,4 +569,71 @@ function formatTrackStatus(status: string) {
     default:
       return status;
   }
+}
+
+function safeParseJson(raw: string | null | undefined) {
+  if (!raw) {
+    return { value: null, parsed: false };
+  }
+
+  try {
+    return {
+      value: JSON.parse(raw) as unknown,
+      parsed: true,
+    };
+  } catch {
+    return {
+      value: raw,
+      parsed: false,
+    };
+  }
+}
+
+function formatStatsPreview(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return getPreviewText(typeof value === "string" ? value : "-");
+  }
+
+  const stats = value as Partial<SyncStats>;
+  const previewItems = [
+    `추가 ${formatStatNumber(stats.insertedTracks)}`,
+    `중복 건너뜀 ${formatStatNumber(stats.skippedAlreadyInPlaylist)}`,
+    `실패 ${formatStatNumber(stats.failedCount)}`,
+    `미매칭 ${formatStatNumber(stats.noMatchCount)}`,
+    `큐 ${formatStatNumber(stats.queuedTracks)}`,
+  ];
+
+  if (stats.quotaAbort === true) {
+    previewItems.push("quota 중단");
+  }
+
+  return previewItems.join(" · ");
+}
+
+function formatStructuredLog(value: unknown) {
+  if (value == null) {
+    return "-";
+  }
+
+  if (typeof value === "string") {
+    return escapeHtml(value);
+  }
+
+  try {
+    return escapeHtml(JSON.stringify(value, null, 2));
+  } catch {
+    return escapeHtml(String(value));
+  }
+}
+
+function getPreviewText(value: string | null | undefined, maxLength = 140) {
+  if (!value) {
+    return "-";
+  }
+
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function formatStatNumber(value: number | undefined) {
+  return typeof value === "number" ? String(value) : "-";
 }

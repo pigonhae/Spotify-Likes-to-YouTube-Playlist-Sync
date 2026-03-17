@@ -108,4 +108,79 @@ describe("renderDashboard", () => {
     expect(html).toContain('action="/admin/reset"');
     expect(html).toContain('class="message error"');
   });
+
+  it("renders recent sync runs as cards with collapsible structured logs", () => {
+    const longError = "quotaExceeded:".concat("A".repeat(300));
+    const html = renderDashboard({
+      summary: {
+        spotifyConnected: true,
+        youtubeConnected: true,
+        playlistId: null,
+        lastRunAt: null,
+        recentRuns: [
+          {
+            id: 1,
+            trigger: "manual",
+            status: "quota_exhausted",
+            startedAt: Date.parse("2026-03-17T00:00:00.000Z"),
+            finishedAt: Date.parse("2026-03-17T00:05:00.000Z"),
+            statsJson: JSON.stringify({
+              insertedTracks: 0,
+              skippedAlreadyInPlaylist: 14,
+              failedCount: 1,
+              noMatchCount: 2,
+              queuedTracks: 32,
+              quotaAbort: true,
+              raw: "https://example.com/" + "x".repeat(250),
+            }),
+            errorSummary: longError,
+          },
+        ],
+        attentionTracks: [],
+      },
+      accounts: [],
+    });
+    const recentRunsStart = html.indexOf('<div class="runs">');
+    const recentRunsEnd = html.indexOf("</section>", recentRunsStart);
+    const recentRunsSection = html.slice(recentRunsStart, recentRunsEnd);
+
+    expect(recentRunsStart).toBeGreaterThan(-1);
+    expect(recentRunsSection).toContain('class="runs"');
+    expect(recentRunsSection).toContain('class="run-card"');
+    expect(recentRunsSection).not.toContain("<table>");
+    expect(recentRunsSection).toContain("통계 상세 보기");
+    expect(recentRunsSection).toContain("오류 상세 보기");
+    expect(recentRunsSection).toContain('class="run-log"');
+    expect(recentRunsSection).toContain("추가 0");
+    expect(recentRunsSection).toContain("quota 중단");
+    expect(recentRunsSection).toContain("quotaExceeded");
+  });
+
+  it("renders invalid stats JSON safely in the log disclosure", () => {
+    const html = renderDashboard({
+      summary: {
+        spotifyConnected: false,
+        youtubeConnected: false,
+        playlistId: null,
+        lastRunAt: null,
+        recentRuns: [
+          {
+            id: 2,
+            trigger: "schedule",
+            status: "failed",
+            startedAt: Date.parse("2026-03-17T01:00:00.000Z"),
+            finishedAt: Date.parse("2026-03-17T01:01:00.000Z"),
+            statsJson: '{"broken": true',
+            errorSummary: null,
+          },
+        ],
+        attentionTracks: [],
+      },
+      accounts: [],
+    });
+
+    expect(html).toContain("통계 상세 보기");
+    expect(html).toContain("{&quot;broken&quot;: true");
+    expect(html).toContain("오류 요약");
+  });
 });
