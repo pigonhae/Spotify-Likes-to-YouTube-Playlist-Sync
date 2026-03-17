@@ -15,7 +15,10 @@ export function renderDashboard(input: {
 }) {
   const spotifyAccount = input.accounts.find((account) => account.provider === "spotify");
   const youtubeAccount = input.accounts.find((account) => account.provider === "youtube");
-  const canRunSync = input.summary.spotifyConnected && input.summary.youtubeConnected;
+  const isSpotifyConnected = input.summary.spotifyConnected === true;
+  const isYouTubeConnected = input.summary.youtubeConnected === true;
+  const hasConnectedProvider = isSpotifyConnected || isYouTubeConnected;
+  const canRunSync = isSpotifyConnected && isYouTubeConnected;
 
   return `<!doctype html>
 <html lang="ko">
@@ -88,10 +91,6 @@ export function renderDashboard(input: {
       form, .actions {
         display: grid;
         gap: 10px;
-      }
-      .stack {
-        display: grid;
-        gap: 12px;
       }
       button, input {
         border-radius: 12px;
@@ -184,33 +183,41 @@ export function renderDashboard(input: {
         <article class="panel">
           <h2 style="margin-top:0;">Spotify 연결 상태</h2>
           <p>
-            <span class="status ${spotifyAccount && !spotifyAccount.invalidatedAt ? "" : "warn"}">
-              Spotify ${spotifyAccount && !spotifyAccount.invalidatedAt ? "연결됨" : "설정 필요"}
+            <span class="status ${isSpotifyConnected ? "" : "warn"}">
+              Spotify ${isSpotifyConnected ? "연결됨" : "설정 필요"}
             </span>
           </p>
           <p class="muted">${escapeHtml(spotifyAccount?.externalDisplayName ?? "연결되지 않음")}</p>
           ${spotifyAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(spotifyAccount.lastRefreshError)}</p>` : ""}
           <div class="actions">
             <a href="/auth/spotify/start"><button type="button">Spotify 연결</button></a>
-            <form method="post" action="/admin/connections/spotify/disconnect" data-confirm-message="Spotify 연결을 해제할까요? 저장된 Spotify 토큰과 계정 정보가 제거되며, 다시 연결하기 전까지 동기화가 중단됩니다.">
-              <button type="submit" class="danger secondary" data-loading-label="해제 중...">Spotify 연결 해제</button>
-            </form>
+            ${
+              isSpotifyConnected
+                ? `<form method="post" action="/admin/connections/spotify/disconnect" data-confirm-message="Spotify 연결을 해제할까요? 저장된 Spotify 토큰과 계정 정보가 제거되며, 다시 연결하기 전까지 동기화가 중단됩니다.">
+                    <button type="submit" class="danger secondary" data-loading-label="해제 중...">Spotify 연결 해제</button>
+                  </form>`
+                : ""
+            }
           </div>
         </article>
         <article class="panel">
           <h2 style="margin-top:0;">YouTube 연결 상태</h2>
           <p>
-            <span class="status ${youtubeAccount && !youtubeAccount.invalidatedAt ? "" : "warn"}">
-              YouTube ${youtubeAccount && !youtubeAccount.invalidatedAt ? "연결됨" : "설정 필요"}
+            <span class="status ${isYouTubeConnected ? "" : "warn"}">
+              YouTube ${isYouTubeConnected ? "연결됨" : "설정 필요"}
             </span>
           </p>
           <p class="muted">${escapeHtml(youtubeAccount?.externalDisplayName ?? "연결되지 않음")}</p>
           ${youtubeAccount?.lastRefreshError ? `<p class="muted">최근 오류: ${escapeHtml(youtubeAccount.lastRefreshError)}</p>` : ""}
           <div class="actions">
             <a href="/auth/youtube/start"><button type="button">YouTube 연결</button></a>
-            <form method="post" action="/admin/connections/youtube/disconnect" data-confirm-message="YouTube 연결을 해제할까요? 저장된 YouTube 토큰과 관리 중인 재생목록 상태가 초기화됩니다.">
-              <button type="submit" class="danger secondary" data-loading-label="해제 중...">YouTube 연결 해제</button>
-            </form>
+            ${
+              isYouTubeConnected
+                ? `<form method="post" action="/admin/connections/youtube/disconnect" data-confirm-message="YouTube 연결을 해제할까요? 저장된 YouTube 토큰과 관리 중인 재생목록 상태가 초기화됩니다.">
+                    <button type="submit" class="danger secondary" data-loading-label="해제 중...">YouTube 연결 해제</button>
+                  </form>`
+                : ""
+            }
           </div>
         </article>
         <article class="panel">
@@ -232,19 +239,23 @@ export function renderDashboard(input: {
           }
         </article>
       </section>
-      <section class="panel danger" style="margin-top:16px;">
-        <h2 style="margin-top:0;">위험 작업</h2>
-        <p class="muted">실수 방지를 위해 브라우저 확인창을 거친 뒤 실행됩니다. 전체 초기화는 되돌릴 수 없습니다.</p>
-        <ul class="danger-list">
-          <li>전체 초기화는 Spotify/YouTube 토큰, 계정 정보, 재생목록 ID, 곡 매핑, 실패 이력, 동기화 로그까지 모두 지웁니다.</li>
-          <li>YouTube 연결 해제는 YouTube 계정 상태와 재생목록 귀속 정보만 지우고, 곡 검색 결과와 수동 매핑은 유지합니다.</li>
-          <li>Spotify 연결 해제는 Spotify 계정 상태만 지우며, YouTube 상태와 기존 이력은 유지합니다.</li>
-        </ul>
-        <form method="post" action="/admin/reset" data-prompt-text="전체 초기화를 진행하려면 RESET을 입력하세요." data-confirm-message="정말 전체 초기화를 진행할까요? 저장된 프로젝트 상태가 모두 삭제됩니다.">
-          <input type="hidden" name="confirmationText" value="" />
-          <button type="submit" class="danger" data-loading-label="초기화 중...">전체 초기화</button>
-        </form>
-      </section>
+      ${
+        hasConnectedProvider
+          ? `<section class="panel danger" style="margin-top:16px;">
+              <h2 style="margin-top:0;">위험 작업</h2>
+              <p class="muted">실수 방지를 위해 브라우저 확인창을 거친 뒤 실행됩니다. 전체 초기화는 되돌릴 수 없습니다.</p>
+              <ul class="danger-list">
+                <li>전체 초기화는 Spotify/YouTube 토큰, 계정 정보, 재생목록 ID, 곡 매핑, 실패 이력, 동기화 로그까지 모두 지웁니다.</li>
+                <li>YouTube 연결 해제는 YouTube 계정 상태와 재생목록 귀속 정보만 지우고, 곡 검색 결과와 수동 매핑은 유지합니다.</li>
+                <li>Spotify 연결 해제는 Spotify 계정 상태만 지우며, YouTube 상태와 기존 이력은 유지합니다.</li>
+              </ul>
+              <form method="post" action="/admin/reset" data-prompt-text="전체 초기화를 진행하려면 RESET을 입력하세요." data-confirm-message="정말 전체 초기화를 진행할까요? 저장된 프로젝트 상태가 모두 삭제됩니다.">
+                <input type="hidden" name="confirmationText" value="" />
+                <button type="submit" class="danger" data-loading-label="초기화 중...">전체 초기화</button>
+              </form>
+            </section>`
+          : ""
+      }
       <section class="panel" style="margin-top:16px;">
         <h2 style="margin-top:0;">최근 동기화 실행 내역</h2>
         <table>
