@@ -7,6 +7,8 @@ import { renderDashboard } from "../views/dashboard.js";
 
 export async function registerRoutes(app: FastifyInstance, context: AppContext) {
   const basicAuthGuard = app.basicAuth;
+  const redirectWithMessage = (reply: FastifyReply, message: string) =>
+    reply.redirect(`/?message=${encodeURIComponent(message)}`);
 
   const syncSecretGuard = async (request: FastifyRequest, reply: FastifyReply) => {
     const authorization = request.headers.authorization;
@@ -54,7 +56,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     }
 
     await context.oauthService.handleSpotifyCallback(query.code, query.state);
-    return reply.redirect("/?message=Spotify 계정이 연결되었습니다");
+    return redirectWithMessage(reply, "Spotify 계정이 연결되었습니다");
   });
 
   app.get("/auth/youtube/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
@@ -67,12 +69,12 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     }
 
     await context.oauthService.handleYouTubeCallback(query.code, query.state);
-    return reply.redirect("/?message=YouTube 계정이 연결되었습니다");
+    return redirectWithMessage(reply, "YouTube 계정이 연결되었습니다");
   });
 
   app.post("/admin/sync", { onRequest: basicAuthGuard }, async (_request, reply) => {
     await context.syncService.run("manual");
-    return reply.redirect("/?message=동기화가 완료되었습니다");
+    return redirectWithMessage(reply, "동기화가 완료되었습니다");
   });
 
   app.post(
@@ -93,7 +95,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
       }
 
       context.store.setManualVideoId(params.spotifyTrackId, videoId);
-      return reply.redirect("/?message=수동 지정이 저장되었습니다");
+      return redirectWithMessage(reply, "수동 지정이 저장되었습니다");
     },
   );
 
