@@ -1,9 +1,9 @@
 import ytsr from "@distube/ytsr";
 
 import type { AppConfig } from "../../config.js";
-import { NoSearchResultsError, QuotaExceededError } from "../../lib/errors.js";
+import { QuotaExceededError } from "../../lib/errors.js";
 import type { SearchCandidate } from "../../types.js";
-import { chooseBestMatch, type TrackForMatching } from "../../services/matching/matcher.js";
+import { classifyMatch, type TrackForMatching } from "../../services/matching/matcher.js";
 import { QuotaService } from "../../services/quota-service.js";
 import { YouTubeClient } from "../youtube/client.js";
 
@@ -19,7 +19,7 @@ export class YouTubeSearchService {
     const fallbackQuery = `${track.trackName} ${track.artistNames.join(" ")} ${track.albumName ?? ""}`.trim();
 
     let candidates: SearchCandidate[] = await this.searchWithYtsr(primaryQuery);
-    const preview = candidates.length > 0 ? chooseBestMatch(track, candidates, 0).best : null;
+    const preview = candidates.length > 0 ? classifyMatch(track, candidates, 0).best : null;
 
     if (
       this.config.YOUTUBE_SEARCH_PROVIDER === "official" ||
@@ -39,7 +39,11 @@ export class YouTubeSearchService {
     }
 
     if (candidates.length === 0) {
-      throw new NoSearchResultsError(`No YouTube candidates found for ${track.trackName}`);
+      return {
+        disposition: "no_match" as const,
+        best: null,
+        all: [],
+      };
     }
 
     if (!(await this.quotaService.hasRoom(1))) {
@@ -54,7 +58,7 @@ export class YouTubeSearchService {
     await this.quotaService.charge(1);
 
     const merged = mergeCandidates(candidates, validated);
-    return chooseBestMatch(track, merged, this.config.MATCH_THRESHOLD);
+    return classifyMatch(track, merged, this.config.MATCH_THRESHOLD);
   }
 
   private async searchWithYtsr(query: string) {

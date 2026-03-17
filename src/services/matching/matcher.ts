@@ -1,6 +1,5 @@
 import { containsAny, jaccardSimilarity, normalizeText } from "../../lib/strings.js";
-import { LowConfidenceMatchError } from "../../lib/errors.js";
-import type { MatchResult, SearchCandidate } from "../../types.js";
+import type { MatchDecision, MatchResult, SearchCandidate } from "../../types.js";
 
 const NEGATIVE_MARKERS = [
   "live",
@@ -37,27 +36,43 @@ export interface TrackForMatching {
   durationMs: number;
 }
 
-export function chooseBestMatch(
+export function rankCandidates(
+  track: TrackForMatching,
+  candidates: SearchCandidate[],
+) {
+  return candidates
+    .map((candidate) => scoreCandidate(track, candidate))
+    .sort((left, right) => right.score - left.score);
+}
+
+export function classifyMatch(
   track: TrackForMatching,
   candidates: SearchCandidate[],
   threshold: number,
-) {
-  const scored = candidates
-    .map((candidate) => scoreCandidate(track, candidate))
-    .sort((left, right) => right.score - left.score);
+): MatchDecision {
+  const all = rankCandidates(track, candidates);
+  const best = all[0] ?? null;
 
-  const best = scored[0];
-  if (!best || best.score < threshold) {
-    throw new LowConfidenceMatchError(
-      best
-        ? `Top candidate scored ${Math.round(best.score)} which is below the threshold`
-        : "No candidates were available for scoring",
-    );
+  if (!best) {
+    return {
+      disposition: "no_match",
+      best: null,
+      all,
+    };
+  }
+
+  if (best.score >= threshold) {
+    return {
+      disposition: "matched_auto",
+      best,
+      all,
+    };
   }
 
   return {
     best,
-    all: scored,
+    all,
+    disposition: "review_required",
   };
 }
 

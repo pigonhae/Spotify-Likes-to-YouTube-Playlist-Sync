@@ -45,6 +45,25 @@ describe("registerRoutes", () => {
 
     await close();
   });
+
+  it("submits manual review selections through the new review endpoint", async () => {
+    const { app, close } = await createTestApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/tracks/spotify-track-1/review/manual",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      payload: "videoInput=dQw4w9WgXcQ",
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toContain(encodeURIComponent("수동 지정을 저장했습니다."));
+
+    await close();
+  });
 });
 
 async function createTestApp() {
@@ -76,6 +95,16 @@ async function createTestApp() {
       run: async () => ({
         skipped: true,
         reason: "Spotify 怨꾩젙 ?곌껐???꾩슂?⑸땲??",
+      }),
+    },
+    trackReviewService: {
+      acceptRecommendation: async () => ({
+        alreadySelected: false,
+        videoId: "review12345A",
+      }),
+      saveManualSelection: async () => ({
+        alreadySelected: false,
+        videoId: "dQw4w9WgXcQ",
       }),
     },
     accountManagementService: new AccountManagementService(config, store),

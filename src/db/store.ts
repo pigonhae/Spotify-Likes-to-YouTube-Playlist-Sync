@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 
-import type { MatchResult, Provider, SpotifyTrack } from "../types.js";
+import type {
+  ManualResolutionType,
+  MatchResult,
+  Provider,
+  SpotifyTrack,
+  TrackSearchStatus,
+} from "../types.js";
 import {
   appSettings,
   oauthAccounts,
@@ -17,6 +23,14 @@ import {
 import type { AppDatabase } from "./client.js";
 
 const PLAYLIST_SETTING_KEY = "youtube.playlistId";
+
+interface ManualSelectionMetadata {
+  matchedVideoTitle?: string | null;
+  matchedChannelTitle?: string | null;
+  matchedSource?: string | null;
+  matchedScore?: number | null;
+  manualResolutionType?: ManualResolutionType | null;
+}
 
 export async function createAppStore(
   database: AppDatabase,
@@ -602,7 +616,7 @@ export class AppStore {
           or(
             eq(trackMappings.searchStatus, "failed"),
             eq(trackMappings.searchStatus, "no_match"),
-            eq(trackMappings.searchStatus, "needs_manual"),
+            eq(trackMappings.searchStatus, "review_required"),
             and(eq(trackMappings.searchStatus, "matched_manual"), isNull(trackMappings.lastSyncedAt)),
           ),
         ),
@@ -611,15 +625,22 @@ export class AppStore {
       .limit(limit);
   }
 
-  async setManualVideoId(spotifyTrackId: string, manualVideoId: string) {
+  async setManualVideoId(
+    spotifyTrackId: string,
+    manualVideoId: string,
+    metadata: ManualSelectionMetadata = {},
+  ) {
     await this.db
       .update(trackMappings)
       .set({
         manualVideoId,
+        manualResolutionType: metadata.manualResolutionType ?? "manual_input",
         searchStatus: "matched_manual",
         matchedVideoId: manualVideoId,
-        matchedSource: "manual",
-        matchedScore: 100,
+        matchedVideoTitle: metadata.matchedVideoTitle ?? null,
+        matchedChannelTitle: metadata.matchedChannelTitle ?? null,
+        matchedSource: metadata.matchedSource ?? "manual",
+        matchedScore: metadata.matchedScore ?? 100,
         lastError: null,
         updatedAt: Date.now(),
       })
@@ -635,7 +656,15 @@ export class AppStore {
     await this.db
       .update(trackMappings)
       .set({
-        searchStatus: "pending",
+        searchStatus: "pending" satisfies TrackSearchStatus,
+        reviewVideoId: null,
+        reviewVideoTitle: null,
+        reviewChannelTitle: null,
+        reviewVideoUrl: null,
+        reviewSource: null,
+        reviewScore: null,
+        reviewReasonsJson: null,
+        reviewUpdatedAt: null,
         lastError: null,
         updatedAt: Date.now(),
       })
@@ -657,6 +686,41 @@ export class AppStore {
         matchedScore: Math.round(result.score),
         matchedSource: result.candidate.source,
         searchStatus: "matched_auto",
+        manualResolutionType: null,
+        reviewVideoId: null,
+        reviewVideoTitle: null,
+        reviewChannelTitle: null,
+        reviewVideoUrl: null,
+        reviewSource: null,
+        reviewScore: null,
+        reviewReasonsJson: null,
+        reviewUpdatedAt: null,
+        searchAttempts: sql`${trackMappings.searchAttempts} + 1`,
+        lastSearchAt: Date.now(),
+        lastError: null,
+        updatedAt: Date.now(),
+      })
+      .where(
+        and(
+          eq(trackMappings.userId, this.userId),
+          eq(trackMappings.spotifyTrackId, spotifyTrackId),
+        ),
+      );
+  }
+
+  async saveReviewCandidate(spotifyTrackId: string, result: MatchResult) {
+    await this.db
+      .update(trackMappings)
+      .set({
+        searchStatus: "review_required",
+        reviewVideoId: result.candidate.videoId,
+        reviewVideoTitle: result.candidate.title,
+        reviewChannelTitle: result.candidate.channelTitle,
+        reviewVideoUrl: result.candidate.url,
+        reviewSource: result.candidate.source,
+        reviewScore: Math.round(result.score),
+        reviewReasonsJson: JSON.stringify(result.reasons),
+        reviewUpdatedAt: Date.now(),
         searchAttempts: sql`${trackMappings.searchAttempts} + 1`,
         lastSearchAt: Date.now(),
         lastError: null,
@@ -672,13 +736,21 @@ export class AppStore {
 
   async markTrackSearchFailure(
     spotifyTrackId: string,
-    searchStatus: "failed" | "no_match" | "needs_manual",
+    searchStatus: "failed" | "no_match",
     message: string,
   ) {
     await this.db
       .update(trackMappings)
       .set({
         searchStatus,
+        reviewVideoId: null,
+        reviewVideoTitle: null,
+        reviewChannelTitle: null,
+        reviewVideoUrl: null,
+        reviewSource: null,
+        reviewScore: null,
+        reviewReasonsJson: null,
+        reviewUpdatedAt: null,
         searchAttempts: sql`${trackMappings.searchAttempts} + 1`,
         lastSearchAt: Date.now(),
         lastError: message,
@@ -788,9 +860,24 @@ export class AppStore {
       albumName: track.albumName,
       searchStatus: track.searchStatus,
       lastError: track.lastError,
+      externalUrl: track.externalUrl,
       manualVideoId: track.manualVideoId,
+      manualResolutionType: track.manualResolutionType,
       matchedVideoId: track.matchedVideoId,
+      matchedVideoTitle: track.matchedVideoTitle,
+      matchedChannelTitle: track.matchedChannelTitle,
+      matchedScore: track.matchedScore,
+      reviewVideoId: track.reviewVideoId,
+      reviewVideoTitle: track.reviewVideoTitle,
+      reviewChannelTitle: track.reviewChannelTitle,
+      reviewVideoUrl: track.reviewVideoUrl,
+      reviewSource: track.reviewSource,
+      reviewScore: track.reviewScore,
+      reviewReasons: parseReviewReasons(track.reviewReasonsJson),
+      reviewUpdatedAt: track.reviewUpdatedAt,
+      playlistVideoId: track.playlistVideoId,
       lastSyncedAt: track.lastSyncedAt,
+      updatedAt: track.updatedAt,
     }));
 
     return {
@@ -801,5 +888,18 @@ export class AppStore {
       recentRuns,
       attentionTracks,
     };
+  }
+}
+
+function parseReviewReasons(raw: string | null) {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
   }
 }

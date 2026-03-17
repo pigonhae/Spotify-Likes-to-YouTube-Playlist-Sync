@@ -12,6 +12,7 @@ import { AccountManagementService } from "./services/account-management-service.
 import { OAuthService } from "./services/oauth-service.js";
 import { QuotaService } from "./services/quota-service.js";
 import { SyncService } from "./services/sync/sync-service.js";
+import { TrackReviewService } from "./services/track-review-service.js";
 
 export interface AppContext {
   config: ReturnType<typeof getConfig>;
@@ -19,6 +20,7 @@ export interface AppContext {
   oauthService: OAuthService;
   quotaService: QuotaService;
   syncService: SyncService;
+  trackReviewService: TrackReviewService;
   accountManagementService: AccountManagementService;
 }
 
@@ -44,6 +46,11 @@ export async function buildApp() {
     oauthService,
     quotaService,
     youtubeSearchService,
+  );
+  const trackReviewService = new TrackReviewService(
+    store,
+    oauthService.getYouTubeClient(),
+    quotaService,
   );
   const accountManagementService = new AccountManagementService(config, store);
 
@@ -77,6 +84,7 @@ export async function buildApp() {
     oauthService,
     quotaService,
     syncService,
+    trackReviewService,
     accountManagementService,
   };
 

@@ -185,4 +185,53 @@ describe("renderDashboard", () => {
     expect(html).toContain("{&quot;broken&quot;: true");
     expect(html).toContain("오류 요약");
   });
+
+  it("renders review cards with recommendation actions and manual entry controls", () => {
+    const html = renderDashboard({
+      summary: {
+        spotifyConnected: true,
+        youtubeConnected: true,
+        playlistId: null,
+        lastRunAt: null,
+        recentRuns: [],
+        attentionTracks: [
+          {
+            spotifyTrackId: "spotify-track-review",
+            trackName: "A Very Long Track Title ".repeat(8).trim(),
+            artistNames: ["An Artist With A Very Long Name".repeat(4)],
+            albumName: "An Album With A Very Long Name".repeat(3),
+            searchStatus: "review_required",
+            lastError: null,
+            externalUrl: "https://open.spotify.com/track/spotify-track-review",
+            manualVideoId: null,
+            manualResolutionType: null,
+            matchedVideoId: null,
+            matchedVideoTitle: null,
+            matchedChannelTitle: null,
+            matchedScore: null,
+            reviewVideoId: "review12345A",
+            reviewVideoTitle: "A Recommended Video Title ".repeat(6).trim(),
+            reviewChannelTitle: "A Recommended Channel Name ".repeat(5).trim(),
+            reviewVideoUrl: "https://www.youtube.com/watch?v=review12345A&feature=share&list=" + "x".repeat(120),
+            reviewSource: "youtube_api",
+            reviewScore: 54,
+            reviewReasons: ["title:0.55", "artist hits:1", "negative title marker"],
+            reviewUpdatedAt: Date.parse("2026-03-17T02:00:00.000Z"),
+            playlistVideoId: null,
+            lastSyncedAt: null,
+            updatedAt: Date.parse("2026-03-17T02:00:00.000Z"),
+          },
+        ],
+      },
+      accounts: [],
+    });
+
+    expect(html).toContain('class="attention-card review-card"');
+    expect(html).toContain('action="/admin/tracks/spotify-track-review/review/accept"');
+    expect(html).toContain('action="/admin/tracks/spotify-track-review/review/manual"');
+    expect(html).toContain("추천 점수 54");
+    expect(html).toContain("mqdefault.jpg");
+    expect(html).toContain("수동 입력하기");
+    expect(html).not.toContain("<table>");
+  });
 });

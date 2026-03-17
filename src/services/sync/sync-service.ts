@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { AppError, LowConfidenceMatchError, NoSearchResultsError, QuotaExceededError } from "../../lib/errors.js";
+import { AppError, QuotaExceededError } from "../../lib/errors.js";
 import { YouTubeSearchService } from "../../providers/search/youtube-search.js";
 import type { AppConfig } from "../../config.js";
 import type { AppStore } from "../../db/store.js";
@@ -36,6 +36,7 @@ export class SyncService {
       skippedAlreadyInPlaylist: 0,
       reusedCachedMatches: 0,
       manualOverridesApplied: 0,
+      reviewRequiredCount: 0,
       noMatchCount: 0,
       failedCount: 0,
       quotaAbort: false,
@@ -59,8 +60,13 @@ export class SyncService {
 
       for (const track of tracks) {
         const manualVideoId = track.manualVideoId;
-        const matchedVideoId = track.matchedVideoId;
+        const matchedVideoId = track.searchStatus === "matched_auto" ? track.matchedVideoId : null;
         const targetVideoId = manualVideoId ?? matchedVideoId;
+
+        if (track.searchStatus === "review_required" && !manualVideoId) {
+          stats.reviewRequiredCount += 1;
+          continue;
+        }
 
         if (targetVideoId && playlistMap.has(targetVideoId)) {
           await this.store.markTrackInserted(
@@ -81,24 +87,41 @@ export class SyncService {
           } else if (matchedVideoId) {
             stats.reusedCachedMatches += 1;
           } else {
-            const match = await this.youtubeSearchService.findBestMatch({
+            const decision = await this.youtubeSearchService.findBestMatch({
               spotifyTrackId: track.spotifyTrackId,
               trackName: track.trackName,
               artistNames: JSON.parse(track.artistNamesJson) as string[],
               albumName: track.albumName,
               durationMs: track.durationMs,
             });
-            await this.store.saveMatchResult(track.spotifyTrackId, match.best);
-            videoId = match.best.candidate.videoId;
+
+            if (decision.disposition === "no_match" || !decision.best) {
+              await this.store.markTrackSearchFailure(
+                track.spotifyTrackId,
+                "no_match",
+                "검색 결과를 찾지 못했습니다.",
+              );
+              stats.noMatchCount += 1;
+              continue;
+            }
+
+            if (decision.disposition === "review_required") {
+              await this.store.saveReviewCandidate(track.spotifyTrackId, decision.best);
+              stats.reviewRequiredCount += 1;
+              continue;
+            }
+
+            await this.store.saveMatchResult(track.spotifyTrackId, decision.best);
+            videoId = decision.best.candidate.videoId;
           }
 
           if (!videoId) {
             await this.store.markTrackSearchFailure(
               track.spotifyTrackId,
-              "needs_manual",
-              "No target video ID available",
+              "failed",
+              "추가할 YouTube 영상 ID를 결정하지 못했습니다.",
             );
-            stats.noMatchCount += 1;
+            stats.failedCount += 1;
             continue;
           }
 
@@ -123,18 +146,6 @@ export class SyncService {
           if (error instanceof QuotaExceededError) {
             stats.quotaAbort = true;
             throw error;
-          }
-
-          if (error instanceof NoSearchResultsError) {
-            await this.store.markTrackSearchFailure(track.spotifyTrackId, "no_match", error.message);
-            stats.noMatchCount += 1;
-            continue;
-          }
-
-          if (error instanceof LowConfidenceMatchError) {
-            await this.store.markTrackSearchFailure(track.spotifyTrackId, "needs_manual", error.message);
-            stats.noMatchCount += 1;
-            continue;
           }
 
           const message = error instanceof Error ? error.message : String(error);

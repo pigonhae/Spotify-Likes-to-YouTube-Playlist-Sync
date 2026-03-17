@@ -1,4 +1,12 @@
 export type Provider = "spotify" | "youtube";
+export type TrackSearchStatus =
+  | "pending"
+  | "matched_auto"
+  | "review_required"
+  | "matched_manual"
+  | "no_match"
+  | "failed";
+export type ManualResolutionType = "recommended" | "manual_input";
 
 export interface SpotifyTrack {
   spotifyTrackId: string;
@@ -31,6 +39,14 @@ export interface MatchResult {
   reasons: string[];
 }
 
+export type MatchDisposition = "matched_auto" | "review_required" | "no_match";
+
+export interface MatchDecision {
+  disposition: MatchDisposition;
+  best: MatchResult | null;
+  all: MatchResult[];
+}
+
 export interface SyncStats {
   scannedSpotifyTracks: number;
   newlySeenTracks: number;
@@ -41,6 +57,7 @@ export interface SyncStats {
   skippedAlreadyInPlaylist: number;
   reusedCachedMatches: number;
   manualOverridesApplied: number;
+  reviewRequiredCount: number;
   noMatchCount: number;
   failedCount: number;
   quotaAbort: boolean;

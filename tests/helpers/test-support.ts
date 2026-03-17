@@ -13,7 +13,7 @@ const TEST_DATABASE_URL = "postgres://test:test@localhost:5432/testdb";
 
 export async function createTestStore() {
   const client = new PGlite();
-  await applySqlMigrations(client, path.resolve("drizzle", "0000_initial.sql"));
+  await applySqlMigrations(client, path.resolve("drizzle"));
 
   const pool: QueryClientLike = {
     query: async (text, params = []) => {
@@ -88,14 +88,20 @@ export function createTestConfig(
   };
 }
 
-async function applySqlMigrations(client: PGlite, migrationFilePath: string) {
-  const sql = await fs.readFile(migrationFilePath, "utf8");
-  const statements = sql
-    .split(/;\s*\r?\n/)
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+async function applySqlMigrations(client: PGlite, migrationDirectoryPath: string) {
+  const entries = (await fs.readdir(migrationDirectoryPath))
+    .filter((entry) => entry.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right));
 
-  for (const statement of statements) {
-    await client.query(statement);
+  for (const entry of entries) {
+    const sql = await fs.readFile(path.join(migrationDirectoryPath, entry), "utf8");
+    const statements = sql
+      .split(/;\s*\r?\n/)
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+    for (const statement of statements) {
+      await client.query(statement);
+    }
   }
 }

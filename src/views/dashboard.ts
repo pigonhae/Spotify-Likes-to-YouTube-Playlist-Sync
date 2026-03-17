@@ -5,6 +5,7 @@ type MessageLevel = "success" | "error";
 
 type DashboardSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardSummary"]>>;
 type DashboardRun = DashboardSummary["recentRuns"][number];
+type DashboardAttentionTrack = DashboardSummary["attentionTracks"][number];
 
 export function renderDashboard(input: {
   message?: string;
@@ -23,6 +24,12 @@ export function renderDashboard(input: {
   const isYouTubeConnected = input.summary.youtubeConnected === true;
   const hasConnectedProvider = isSpotifyConnected || isYouTubeConnected;
   const canRunSync = isSpotifyConnected && isYouTubeConnected;
+  const reviewTracks = input.summary.attentionTracks.filter(
+    (track: DashboardAttentionTrack) => track.searchStatus === "review_required",
+  );
+  const otherAttentionTracks = input.summary.attentionTracks.filter(
+    (track: DashboardAttentionTrack) => track.searchStatus !== "review_required",
+  );
 
   return `<!doctype html>
 <html lang="ko">
@@ -287,12 +294,210 @@ export function renderDashboard(input: {
       .run-empty {
         color: var(--muted);
       }
+      .attention-group + .attention-group {
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .attention-heading {
+        margin: 0 0 12px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .attention-list {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+      }
+      .attention-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.7);
+        min-width: 0;
+        overflow: hidden;
+      }
+      .attention-card.review-card {
+        background: linear-gradient(180deg, #fffaf3 0%, rgba(255, 255, 255, 0.92) 100%);
+      }
+      .attention-head {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        min-width: 0;
+      }
+      .attention-head > div {
+        min-width: 0;
+      }
+      .attention-title {
+        margin: 0;
+        font-size: 16px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .attention-subtitle,
+      .attention-note,
+      .attention-link,
+      .attention-error,
+      .video-meta,
+      .video-title,
+      .video-channel,
+      .manual-current {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .attention-subtitle {
+        margin-top: 4px;
+        color: var(--muted);
+      }
+      .attention-status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+      }
+      .score-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f4efe5;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .attention-body {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+        min-width: 0;
+      }
+      .video-card {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: minmax(0, 168px) minmax(0, 1fr);
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--soft-bg);
+        min-width: 0;
+      }
+      .video-thumb {
+        display: block;
+        min-width: 0;
+        max-width: 168px;
+        width: 100%;
+      }
+      .video-thumb img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: #ece5d8;
+      }
+      .video-text {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+      }
+      .video-title {
+        font-weight: 700;
+      }
+      .video-channel,
+      .video-meta {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .reason-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+      }
+      .reason-pill {
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: white;
+        border: 1px solid var(--line);
+        font-size: 12px;
+      }
+      .review-actions,
+      .attention-actions,
+      .manual-form {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+      .manual-form-row {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        min-width: 0;
+      }
+      .manual-form-row input {
+        min-width: 0;
+        width: 100%;
+      }
+      .manual-disclosure,
+      .manual-disclosure[open] {
+        min-width: 0;
+      }
+      .manual-disclosure summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .manual-disclosure summary::-webkit-details-marker {
+        display: none;
+      }
+      .manual-disclosure summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 6px;
+      }
+      .manual-disclosure[open] summary::before {
+        content: "▾";
+      }
+      .manual-panel {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed var(--line);
+        min-width: 0;
+      }
+      .manual-current {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .attention-note {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .attention-error {
+        color: var(--danger);
+        font-size: 13px;
+      }
       @media (max-width: 720px) {
         table, thead, tbody, th, td, tr { display: block; }
         th { display: none; }
         td { padding: 8px 0; }
         .run-card-head {
           grid-template-columns: 1fr;
+        }
+        .attention-head,
+        .video-card,
+        .manual-form-row {
+          grid-template-columns: 1fr;
+        }
+        .video-thumb {
+          max-width: none;
         }
       }
     </style>
@@ -396,35 +601,32 @@ export function renderDashboard(input: {
       </section>
       <section class="panel" style="margin-top:16px;">
         <h2 style="margin-top:0;">확인이 필요한 곡</h2>
-        <table>
-          <thead>
-            <tr><th>곡</th><th>상태</th><th>최근 오류</th><th>수동 지정</th></tr>
-          </thead>
-          <tbody>
-            ${
-              input.summary.attentionTracks.length === 0
-                ? `<tr><td colspan="4">지금은 수동 확인이 필요한 곡이 없습니다.</td></tr>`
-                : input.summary.attentionTracks
-                    .map(
-                      (track: DashboardSummary["attentionTracks"][number]) => `<tr>
-                        <td>
-                          <strong>${escapeHtml(track.trackName)}</strong><br />
-                          <small>${escapeHtml(track.artistNames.join(", "))}${track.albumName ? ` / ${escapeHtml(track.albumName)}` : ""}</small>
-                        </td>
-                        <td>${escapeHtml(formatTrackStatus(track.searchStatus))}</td>
-                        <td><small>${escapeHtml(track.lastError ?? "-")}</small></td>
-                        <td>
-                          <form method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/override">
-                            <input name="videoInput" value="${escapeHtml(track.manualVideoId ?? track.matchedVideoId ?? "")}" placeholder="YouTube URL 또는 video ID" />
-                            <button type="submit" class="secondary" data-loading-label="저장 중...">수동 지정 저장</button>
-                          </form>
-                        </td>
-                      </tr>`,
-                    )
-                    .join("")
-            }
-          </tbody>
-        </table>
+        ${
+          input.summary.attentionTracks.length === 0
+            ? `<p class="run-empty">지금은 수동 확인이 필요한 곡이 없습니다.</p>`
+            : `
+                ${
+                  reviewTracks.length > 0
+                    ? `<section class="attention-group">
+                        <h3 class="attention-heading">검토가 필요한 추천 후보</h3>
+                        <div class="attention-list">
+                          ${reviewTracks.map((track: DashboardAttentionTrack) => renderReviewTrackCard(track)).join("")}
+                        </div>
+                      </section>`
+                    : ""
+                }
+                ${
+                  otherAttentionTracks.length > 0
+                    ? `<section class="attention-group">
+                        <h3 class="attention-heading">직접 확인하거나 다시 시도할 곡</h3>
+                        <div class="attention-list">
+                          ${otherAttentionTracks.map((track: DashboardAttentionTrack) => renderAttentionTrackCard(track)).join("")}
+                        </div>
+                      </section>`
+                    : ""
+                }
+              `
+        }
       </section>
     </main>
     <script>
@@ -513,6 +715,203 @@ function renderRunCard(run: DashboardRun) {
   </article>`;
 }
 
+function renderReviewTrackCard(track: DashboardAttentionTrack) {
+  return `<article class="attention-card review-card">
+    <div class="attention-head">
+      <div>
+        <p class="attention-title">${escapeHtml(track.trackName)}</p>
+        <div class="attention-subtitle">${escapeHtml(formatTrackArtists(track))}</div>
+      </div>
+      <div class="attention-status-row">
+        <span class="status warn">${escapeHtml(formatTrackStatus(track.searchStatus))}</span>
+        ${typeof track.reviewScore === "number" ? `<span class="score-pill">추천 점수 ${escapeHtml(String(track.reviewScore))}</span>` : ""}
+      </div>
+    </div>
+    <div class="attention-body">
+      ${track.reviewVideoId ? renderRecommendationCard(track) : `<div class="inline-note attention-note">추천 후보를 자동으로 고르지 못했습니다. 아래에서 직접 YouTube 영상을 입력해 주세요.</div>`}
+      ${track.reviewReasons.length > 0 ? `<div class="reason-list">${track.reviewReasons.slice(0, 4).map((reason: string) => `<span class="reason-pill">${escapeHtml(formatReviewReason(reason))}</span>`).join("")}</div>` : ""}
+      ${track.lastError ? `<div class="attention-error">${escapeHtml(track.lastError)}</div>` : ""}
+      <div class="review-actions">
+        ${
+          track.reviewVideoId
+            ? `<form method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/accept">
+                <button type="submit" data-loading-label="확정 중...">이 영상 사용</button>
+              </form>`
+            : ""
+        }
+        ${renderManualForm(track, {
+          label: "수동 입력하기",
+          open: !track.reviewVideoId,
+          buttonLabel: "수동 지정 저장",
+        })}
+      </div>
+    </div>
+  </article>`;
+}
+
+function renderAttentionTrackCard(track: DashboardAttentionTrack) {
+  const showManualFormOpen = track.searchStatus !== "matched_manual";
+  const currentVideoId = track.manualVideoId ?? track.matchedVideoId;
+
+  return `<article class="attention-card">
+    <div class="attention-head">
+      <div>
+        <p class="attention-title">${escapeHtml(track.trackName)}</p>
+        <div class="attention-subtitle">${escapeHtml(formatTrackArtists(track))}</div>
+      </div>
+      <div class="attention-status-row">
+        <span class="status ${track.searchStatus === "failed" || track.searchStatus === "no_match" ? "warn" : ""}">${escapeHtml(formatTrackStatus(track.searchStatus))}</span>
+      </div>
+    </div>
+    <div class="attention-body">
+      ${
+        currentVideoId
+          ? renderResolvedVideo(track, currentVideoId)
+          : `<div class="attention-note">아직 확정된 YouTube 영상이 없습니다.</div>`
+      }
+      ${track.lastError ? `<div class="attention-error">${escapeHtml(track.lastError)}</div>` : ""}
+      ${renderManualForm(track, {
+        label: track.searchStatus === "matched_manual" ? "다른 영상으로 바꾸기" : "수동 입력하기",
+        open: showManualFormOpen,
+        buttonLabel: "수동 지정 저장",
+      })}
+    </div>
+  </article>`;
+}
+
+function renderRecommendationCard(track: DashboardAttentionTrack) {
+  if (!track.reviewVideoId) {
+    return "";
+  }
+
+  const reviewUrl = track.reviewVideoUrl ?? getVideoWatchUrl(track.reviewVideoId);
+  return `<div class="video-card">
+    <a class="video-thumb" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">
+      <img src="${escapeHtml(getThumbnailUrl(track.reviewVideoId))}" alt="${escapeHtml(track.reviewVideoTitle ?? track.trackName)}" loading="lazy" />
+    </a>
+    <div class="video-text">
+      <div class="video-title">${escapeHtml(track.reviewVideoTitle ?? track.reviewVideoId)}</div>
+      <div class="video-channel">${escapeHtml(track.reviewChannelTitle ?? "채널 정보 없음")}</div>
+      <div class="video-meta">추천 후보 링크: <a class="attention-link" href="${escapeHtml(reviewUrl)}" target="_blank" rel="noreferrer">${escapeHtml(reviewUrl)}</a></div>
+    </div>
+  </div>`;
+}
+
+function renderResolvedVideo(track: DashboardAttentionTrack, videoId: string) {
+  const sourceText =
+    track.manualResolutionType === "recommended"
+      ? "추천 채택 완료"
+      : track.manualResolutionType === "manual_input"
+        ? "수동 입력 완료"
+        : "확정된 영상";
+
+  return `<div class="inline-note">
+    <div class="manual-current">${escapeHtml(sourceText)}</div>
+    <div class="video-title">${escapeHtml(track.matchedVideoTitle ?? videoId)}</div>
+    <div class="video-channel">${escapeHtml(track.matchedChannelTitle ?? "")}</div>
+    <div class="video-meta"><a class="attention-link" href="${escapeHtml(getVideoWatchUrl(videoId))}" target="_blank" rel="noreferrer">${escapeHtml(getVideoWatchUrl(videoId))}</a></div>
+  </div>`;
+}
+
+function renderManualForm(
+  track: DashboardAttentionTrack,
+  options: {
+    label: string;
+    open: boolean;
+    buttonLabel: string;
+  },
+) {
+  const currentValue = track.manualVideoId ?? "";
+
+  return `<details class="manual-disclosure" ${options.open ? "open" : ""}>
+    <summary>${escapeHtml(options.label)}</summary>
+    <div class="manual-panel">
+      <form class="manual-form" method="post" action="/admin/tracks/${encodeURIComponent(track.spotifyTrackId)}/review/manual">
+        <div class="manual-form-row">
+          <input name="videoInput" value="${escapeHtml(currentValue)}" placeholder="YouTube URL 또는 video ID" />
+          <button type="submit" class="secondary" data-loading-label="저장 중...">${escapeHtml(options.buttonLabel)}</button>
+        </div>
+      </form>
+    </div>
+  </details>`;
+}
+
+function formatTrackArtists(track: DashboardAttentionTrack) {
+  return `${track.artistNames.join(", ")}${track.albumName ? ` / ${track.albumName}` : ""}`;
+}
+
+function formatReviewReason(reason: string) {
+  if (reason.startsWith("title:")) {
+    return `제목 유사도 ${reason.slice("title:".length)}`;
+  }
+
+  if (reason === "contains track title") {
+    return "제목 일치";
+  }
+
+  if (reason.startsWith("artist hits:")) {
+    return `아티스트 단서 ${reason.slice("artist hits:".length)}개`;
+  }
+
+  if (reason === "contains album") {
+    return "앨범명 포함";
+  }
+
+  if (reason === "official marker") {
+    return "공식 업로드 단서";
+  }
+
+  if (reason === "topic channel") {
+    return "토픽 채널";
+  }
+
+  if (reason === "vevo channel") {
+    return "VEVO 채널";
+  }
+
+  if (reason === "duration <=5s") {
+    return "길이 차이 5초 이하";
+  }
+
+  if (reason === "duration <=15s") {
+    return "길이 차이 15초 이하";
+  }
+
+  if (reason === "duration <=30s") {
+    return "길이 차이 30초 이하";
+  }
+
+  if (reason === "duration mismatch") {
+    return "길이 차이 큼";
+  }
+
+  if (reason === "not embeddable") {
+    return "삽입 제한";
+  }
+
+  if (reason === "not syndicated") {
+    return "공개 상태 제한";
+  }
+
+  if (reason === "negative title marker") {
+    return "비공식 키워드 감점";
+  }
+
+  if (reason === "negative channel marker") {
+    return "채널 감점";
+  }
+
+  return reason;
+}
+
+function getVideoWatchUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+function getThumbnailUrl(videoId: string) {
+  return `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+}
+
 function formatDate(timestamp: number | null) {
   if (!timestamp) {
     return "-";
@@ -558,14 +957,14 @@ function formatTrackStatus(status: string) {
       return "대기 중";
     case "matched_auto":
       return "자동 매칭 완료";
+    case "review_required":
+      return "검토 필요";
     case "matched_manual":
       return "수동 지정 완료";
     case "failed":
       return "실패";
     case "no_match":
       return "검색 결과 없음";
-    case "needs_manual":
-      return "수동 확인 필요";
     default:
       return status;
   }
@@ -605,6 +1004,7 @@ function formatStatsPreview(value: unknown) {
   const previewItems = [
     `추가 ${formatStatNumber(stats.insertedTracks)}`,
     `중복 건너뜀 ${formatStatNumber(stats.skippedAlreadyInPlaylist)}`,
+    `검토 ${formatStatNumber(stats.reviewRequiredCount)}`,
     `실패 ${formatStatNumber(stats.failedCount)}`,
     `미매칭 ${formatStatNumber(stats.noMatchCount)}`,
     `큐 ${formatStatNumber(stats.queuedTracks)}`,

@@ -2,7 +2,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AppContext } from "../app.js";
 import { AppError, ValidationError } from "../lib/errors.js";
-import { extractYouTubeVideoId } from "../lib/youtube.js";
 import { renderDashboard } from "../views/dashboard.js";
 
 type FlashLevel = "success" | "error";
@@ -143,6 +142,38 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   });
 
   app.post(
+    "/admin/tracks/:spotifyTrackId/review/accept",
+    { onRequest: basicAuthGuard },
+    async (request, reply) =>
+      handleDashboardAction(
+        reply,
+        async () => {
+          const params = request.params as { spotifyTrackId: string };
+          return context.trackReviewService.acceptRecommendation(params.spotifyTrackId);
+        },
+        (result) => result.alreadySelected ? "이미 추천 영상을 사용 중입니다." : "추천 영상을 확정했습니다.",
+      ),
+  );
+
+  app.post(
+    "/admin/tracks/:spotifyTrackId/review/manual",
+    { onRequest: basicAuthGuard },
+    async (request, reply) =>
+      handleDashboardAction(
+        reply,
+        async () => {
+          const params = request.params as { spotifyTrackId: string };
+          const body = request.body as { videoInput?: string };
+          return context.trackReviewService.saveManualSelection(
+            params.spotifyTrackId,
+            body.videoInput ?? "",
+          );
+        },
+        (result) => result.alreadySelected ? "같은 YouTube 영상을 이미 저장했습니다." : "수동 지정을 저장했습니다.",
+      ),
+  );
+
+  app.post(
     "/admin/tracks/:spotifyTrackId/override",
     { onRequest: basicAuthGuard },
     async (request, reply) =>
@@ -151,20 +182,12 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
-          const videoId = extractYouTubeVideoId(body.videoInput ?? "");
-
-          if (!videoId) {
-            throw new ValidationError("올바른 YouTube URL 또는 video ID를 입력해 주세요.");
-          }
-
-          const track = await context.store.getTrackBySpotifyId(params.spotifyTrackId);
-          if (!track) {
-            throw new AppError("곡을 찾을 수 없습니다.", 404);
-          }
-
-          await context.store.setManualVideoId(params.spotifyTrackId, videoId);
+          return context.trackReviewService.saveManualSelection(
+            params.spotifyTrackId,
+            body.videoInput ?? "",
+          );
         },
-        () => "수동 지정을 저장했습니다.",
+        (result) => result.alreadySelected ? "같은 YouTube 영상을 이미 저장했습니다." : "수동 지정을 저장했습니다.",
       ),
   );
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseBestMatch } from "../src/services/matching/matcher.js";
+import { classifyMatch } from "../src/services/matching/matcher.js";
 
-describe("chooseBestMatch", () => {
+describe("classifyMatch", () => {
   it("prefers official audio over lyric uploads", () => {
     const track = {
       spotifyTrackId: "track-1",
@@ -12,7 +12,7 @@ describe("chooseBestMatch", () => {
       durationMs: 232_000,
     };
 
-    const result = chooseBestMatch(
+    const result = classifyMatch(
       track,
       [
         {
@@ -35,7 +35,37 @@ describe("chooseBestMatch", () => {
       50,
     );
 
-    expect(result.best.candidate.videoId).toBe("topic222222");
-    expect(result.best.score).toBeGreaterThan(70);
+    expect(result.disposition).toBe("matched_auto");
+    expect(result.best?.candidate.videoId).toBe("topic222222");
+    expect(result.best?.score ?? 0).toBeGreaterThan(70);
+  });
+
+  it("classifies below-threshold results as review_required while preserving the top recommendation", () => {
+    const track = {
+      spotifyTrackId: "track-2",
+      trackName: "Satellite",
+      artistNames: ["Artist X"],
+      albumName: "Orbit",
+      durationMs: 210_000,
+    };
+
+    const result = classifyMatch(
+      track,
+      [
+        {
+          videoId: "review11111",
+          title: "Artist X - Satellite live at home",
+          channelTitle: "Artist X Fan Archive",
+          durationSeconds: 209,
+          source: "youtube_api",
+          url: "https://www.youtube.com/watch?v=review11111",
+        },
+      ],
+      80,
+    );
+
+    expect(result.disposition).toBe("review_required");
+    expect(result.best?.candidate.videoId).toBe("review11111");
+    expect(result.best?.score ?? 0).toBeLessThan(80);
   });
 });
