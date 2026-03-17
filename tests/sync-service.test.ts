@@ -264,4 +264,129 @@ describe("SyncService", () => {
 
     await close();
   });
+
+  it("returns the active run instead of pretending to start from zero when a manual sync is already running", async () => {
+    const { store, close } = await createTestStore();
+    const config = createTestConfig({
+      YOUTUBE_DAILY_QUOTA_LIMIT: 10_000,
+      YOUTUBE_PLAYLIST_ID: "playlist-123",
+    });
+
+    const activeRunId = await store.createSyncRun("manual");
+    await store.markSyncRunRunning(activeRunId, "processing_tracks", "Still working");
+    await store.acquireLock("hourly-sync", "other-holder", config.syncLockTtlMs);
+
+    const syncService = new SyncService(
+      config,
+      store,
+      {
+        getValidAccessToken: vi.fn(),
+        getSpotifyClient: vi.fn(),
+        getYouTubeClient: vi.fn(),
+      } as never,
+      new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT),
+      {
+        findBestMatch: vi.fn(),
+      } as never,
+    );
+
+    const result = await syncService.run("manual");
+
+    expect(result.runId).toBe(activeRunId);
+    expect(result.disposition).toBe("already_running");
+    expect(result.status).toBe("running");
+
+    await close();
+  });
+
+  it("inserts tracks in oldest-liked-first order while still using the managed playlist ID", async () => {
+    const { store, close } = await createTestStore();
+    const config = createTestConfig({
+      YOUTUBE_DAILY_QUOTA_LIMIT: 10_000,
+      YOUTUBE_PLAYLIST_ID: "playlist-managed-123",
+    });
+
+    const spotifyTracks = [
+      createSpotifyTrack("spotify-track-newest", "Newest Track", Date.parse("2026-03-17T00:02:00.000Z")),
+      createSpotifyTrack("spotify-track-middle", "Middle Track", Date.parse("2026-03-17T00:01:00.000Z")),
+      createSpotifyTrack("spotify-track-oldest", "Oldest Track", Date.parse("2026-03-17T00:00:00.000Z")),
+    ];
+
+    const insertPlaylistItem = vi.fn(async (_token: string, playlistId: string, videoId: string) => {
+      return `${playlistId}:${videoId}`;
+    });
+    const createPlaylist = vi.fn();
+    const oauthService = {
+      getValidAccessToken: vi.fn(async (provider: string) => `${provider}-token`),
+      getSpotifyClient: () => ({
+        getAllSavedTracks: vi.fn(async () => spotifyTracks),
+      }),
+      getYouTubeClient: () => ({
+        listPlaylistItems: vi.fn(async () => [
+          {
+            playlistItemId: "existing-1",
+            videoId: "unrelated-video",
+            videoTitle: "Renamed Playlist Item",
+            channelTitle: "Changed Channel",
+            position: 0,
+          },
+        ]),
+        insertPlaylistItem,
+        createPlaylist,
+      }),
+    };
+    const youtubeSearchService = {
+      findBestMatch: vi.fn(async ({ spotifyTrackId }: { spotifyTrackId: string }) => ({
+        disposition: "matched_auto" as const,
+        best: {
+          score: 99,
+          reasons: [],
+          candidate: {
+            videoId: `video-for-${spotifyTrackId}`,
+            title: `Video for ${spotifyTrackId}`,
+            channelTitle: "Matched Channel",
+            source: "youtube_api" as const,
+            url: `https://www.youtube.com/watch?v=video-for-${spotifyTrackId}`,
+          },
+        },
+      })),
+    };
+
+    const syncService = new SyncService(
+      config,
+      store,
+      oauthService as never,
+      new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT),
+      youtubeSearchService as never,
+    );
+
+    const result = await syncService.run("manual");
+    const insertedVideoIds = insertPlaylistItem.mock.calls.map((call) => call[2]);
+    const insertedPlaylistIds = new Set(insertPlaylistItem.mock.calls.map((call) => call[1]));
+
+    expect(result.status).toBe("completed");
+    expect(insertedVideoIds).toEqual([
+      "video-for-spotify-track-oldest",
+      "video-for-spotify-track-middle",
+      "video-for-spotify-track-newest",
+    ]);
+    expect(insertedPlaylistIds).toEqual(new Set(["playlist-managed-123"]));
+    expect(createPlaylist).not.toHaveBeenCalled();
+
+    await close();
+  });
 });
+
+function createSpotifyTrack(spotifyTrackId: string, name: string, addedAt: number) {
+  return {
+    spotifyTrackId,
+    name,
+    artistNames: [`${name} Artist`],
+    albumName: `${name} Album`,
+    albumReleaseDate: "2024-01-01",
+    durationMs: 180_000,
+    isrc: null,
+    addedAt,
+    externalUrl: `https://open.spotify.com/track/${spotifyTrackId}`,
+  };
+}

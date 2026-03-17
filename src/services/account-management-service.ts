@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config.js";
 import type { AppStore } from "../db/store.js";
-import { AppError } from "../lib/errors.js";
+import { LocalizedError } from "../lib/localized-error.js";
 
 const ACCOUNT_ACTION_LOCK_NAME = "hourly-sync";
 
@@ -45,9 +45,10 @@ export class AccountManagementService {
     );
 
     if (!acquired) {
-      throw new AppError(
+      throw new LocalizedError(
         "Another sync or account operation is already running. Please wait and try again.",
         409,
+        "message.activeOperationConflict",
       );
     }
 

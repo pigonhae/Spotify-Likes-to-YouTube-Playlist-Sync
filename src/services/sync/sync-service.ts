@@ -8,6 +8,7 @@ import {
 } from "../../lib/errors.js";
 import type { AppConfig } from "../../config.js";
 import type { AppStore } from "../../db/store.js";
+import { LocalizedError } from "../../lib/localized-error.js";
 import type { SyncRunLifecycleStatus, SyncRunResult, SyncRunTrackStatus, SyncStats } from "../../types.js";
 import { YouTubeSearchService } from "../../providers/search/youtube-search.js";
 import { OAuthService } from "../oauth-service.js";
@@ -52,13 +53,29 @@ export class SyncService {
       if (resumeOnly) {
         return null;
       }
-      throw new AppError("Sync is already running", 409);
+
+      const activeRun = await this.store.getActiveSyncRun();
+      if (!activeRun) {
+        throw new LocalizedError(
+          "Another operation is already holding the sync lock.",
+          409,
+          "message.activeOperationConflict",
+        );
+      }
+
+      return {
+        runId: activeRun.id,
+        status: activeRun.status,
+        stats: readStats(activeRun.statsJson),
+        disposition: "already_running",
+      };
     }
 
     let runId = 0;
     let currentSpotifyTrackId: string | null = null;
     let currentTrackName: string | null = null;
     let stats = createEmptyStats();
+    let resumedExistingRun = false;
 
     try {
       const resumableRun = await this.store.findResumableSyncRun();
@@ -67,6 +84,7 @@ export class SyncService {
       }
 
       if (resumableRun) {
+        resumedExistingRun = true;
         runId = resumableRun.id;
         stats = readStats(resumableRun.statsJson);
         await this.store.markSyncRunRunning(
@@ -122,6 +140,7 @@ export class SyncService {
         runId,
         status: finalStatus,
         stats,
+        disposition: resumedExistingRun ? "resumed" : "started",
       };
     } catch (error) {
       const pauseResult = await this.tryPauseRun(
@@ -131,7 +150,10 @@ export class SyncService {
         stats,
       );
       if (pauseResult) {
-        return pauseResult;
+        return {
+          ...pauseResult,
+          disposition: resumedExistingRun ? "resumed" : "started",
+        };
       }
 
       const message = error instanceof Error ? error.message : String(error);
@@ -278,17 +300,63 @@ export class SyncService {
       statusMessage: "Refreshing current YouTube playlist contents",
     });
 
-    const playlistItems = await this.oauthService.getYouTubeClient().listPlaylistItems(youtubeToken, playlistId);
+    const playlistItems = await this.withPlaylistAccessHandling(
+      playlistId,
+      () => this.oauthService.getYouTubeClient().listPlaylistItems(youtubeToken, playlistId),
+    );
     await this.quotaService.charge(Math.max(1, Math.ceil(playlistItems.length / 50)));
     await this.store.replacePlaylistVideos(playlistId, playlistItems);
     stats.playlistItemsSeen = playlistItems.length;
+
+    const playlistMap = new Map(playlistItems.map((item) => [item.videoId, item]));
+    await this.markBaselineExistingTracks(runId, playlistMap, stats);
 
     await this.store.updateSyncRun(runId, {
       playlistSnapshotCompletedAt: Date.now(),
       statusMessage: `Loaded ${playlistItems.length} YouTube playlist items`,
     });
 
-    return new Map(playlistItems.map((item) => [item.videoId, item]));
+    return playlistMap;
+  }
+
+  private async markBaselineExistingTracks(
+    runId: number,
+    playlistMap: Map<string, {
+      playlistItemId: string;
+      videoId: string;
+      videoTitle: string | null;
+      channelTitle: string | null;
+      position: number | null;
+    }>,
+    stats: SyncStats,
+  ) {
+    const tracks = await this.store.listAllSyncRunTracks(runId);
+
+    for (const track of tracks) {
+      const targetVideoId = track.manualVideoId ?? track.matchedVideoId ?? null;
+      if (!targetVideoId || !playlistMap.has(targetVideoId)) {
+        continue;
+      }
+
+      if (TERMINAL_TRACK_STATUSES.includes(track.status as SyncRunTrackStatus)) {
+        continue;
+      }
+
+      const playlistItemId = playlistMap.get(targetVideoId)?.playlistItemId ?? null;
+      await this.store.markTrackInserted(track.spotifyTrackId, playlistItemId);
+      await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
+        status: "skipped_existing",
+        statusMessage: "Video already exists in playlist",
+        playlistItemId,
+        lastError: null,
+      });
+    }
+
+    await this.store.refreshSyncRunProgress(runId);
+    const runSummary = await this.store.getRunSummary(runId);
+    if (runSummary) {
+      stats.skippedAlreadyInPlaylist = runSummary.skippedExistingTracks;
+    }
   }
 
   private async processTracks(
@@ -459,9 +527,12 @@ export class SyncService {
           lastError: null,
         });
 
-        const playlistItemId = await this.oauthService
-          .getYouTubeClient()
-          .insertPlaylistItem(youtubeToken, playlistId, targetVideoId);
+        const playlistItemId = await this.withPlaylistAccessHandling(
+          playlistId,
+          () => this.oauthService
+            .getYouTubeClient()
+            .insertPlaylistItem(youtubeToken, playlistId, targetVideoId),
+        );
         await this.quotaService.charge(50);
         playlistMap.set(targetVideoId, {
           playlistItemId,
@@ -700,6 +771,26 @@ export class SyncService {
     await this.quotaService.charge(50);
     await this.store.saveManagedPlaylistId(playlistId);
     return playlistId;
+  }
+
+  private async withPlaylistAccessHandling<T>(playlistId: string, action: () => Promise<T>) {
+    try {
+      return await action();
+    } catch (error) {
+      if (
+        error instanceof ExternalApiError &&
+        error.provider === "youtube" &&
+        (error.status === 403 || error.status === 404)
+      ) {
+        throw new LocalizedError(
+          `Managed playlist ${playlistId} could not be accessed. Title/privacy changes are not the problem; please check playlist ownership, permissions, or reconnect YouTube.`,
+          502,
+          "message.playlistAccessIssue",
+        );
+      }
+
+      throw error;
+    }
   }
 }
 

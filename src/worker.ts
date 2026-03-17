@@ -2,6 +2,7 @@ import fastify from "fastify";
 
 import { createRuntime } from "./runtime.js";
 import { RailwaySchedulerWorker } from "./services/sync/railway-scheduler-worker.js";
+import { buildWorkerHealthHost } from "./services/sync/worker-health-host.js";
 
 const runtime = await createRuntime();
 
@@ -28,6 +29,11 @@ const worker = new RailwaySchedulerWorker(
   },
 );
 
+const healthHost = buildWorkerHealthHost(
+  loggerHost.log,
+  () => worker.getHealthSnapshot(),
+);
+
 let shuttingDown = false;
 
 const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
@@ -40,6 +46,7 @@ const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
 
   try {
     await worker.stop();
+    await healthHost.close();
     await runtime.close();
     await loggerHost.close();
     process.exit(0);
@@ -57,11 +64,18 @@ process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-await worker.start();
+await healthHost.listen({
+  host: runtime.config.HOST,
+  port: runtime.config.PORT,
+});
 
-loggerHost.log.info(
-  {
-    pollIntervalMs: runtime.config.SCHEDULER_POLL_INTERVAL_MS,
-  },
-  "scheduler worker started",
-);
+void worker.start().then(() => {
+  loggerHost.log.info(
+    {
+      pollIntervalMs: runtime.config.SCHEDULER_POLL_INTERVAL_MS,
+    },
+    "scheduler worker started",
+  );
+}).catch((error) => {
+  loggerHost.log.error({ err: error }, "scheduler worker failed during startup");
+});

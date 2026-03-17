@@ -1,4 +1,5 @@
 export type Provider = "spotify" | "youtube";
+export type Language = "ko" | "en";
 export type TrackSearchStatus =
   | "pending"
   | "matched_auto"
@@ -60,6 +61,32 @@ export interface SyncRunStats {
   quotaAbort: boolean;
 }
 
+export interface LibrarySummary {
+  totalTracks: number;
+  syncedTracks: number;
+  pendingTracks: number;
+  reviewRequiredTracks: number;
+  failedTracks: number;
+  noMatchTracks: number;
+  manualMatchTracks: number;
+}
+
+export interface RunSummary {
+  totalTracks: number;
+  completedTracks: number;
+  remainingTracks: number;
+  skippedExistingTracks: number;
+  insertedTracks: number;
+  reviewRequiredTracks: number;
+  failedTracks: number;
+  noMatchTracks: number;
+  waitingTracks: number;
+  scopedTotalTracks: number | null;
+  scopedCompletedTracks: number | null;
+  scopedRemainingTracks: number | null;
+  baselineReady: boolean;
+}
+
 export interface SyncProgressSnapshot {
   totalTracks: number;
   completedTracks: number;
@@ -114,4 +141,5 @@ export interface SyncRunResult {
   status: SyncRunLifecycleStatus;
   stats: SyncStats;
   error?: string;
+  disposition?: "started" | "resumed" | "already_running";
 }

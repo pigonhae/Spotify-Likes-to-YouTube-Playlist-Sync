@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import type {
+  LibrarySummary,
   ManualResolutionType,
   MatchResult,
   Provider,
+  RunSummary,
   SpotifyTrack,
   SyncEventLevel,
   SyncProgressSnapshot,
@@ -474,7 +476,7 @@ export class AppStore {
         trigger,
         status: "running",
         phase: "queued",
-        statusMessage: "대기 중",
+        statusMessage: "Preparing sync run",
         startedAt: now,
         totalTracks: 0,
         completedTracks: 0,
@@ -823,7 +825,7 @@ export class AppStore {
           spotifyTrackId: input.track.spotifyTrackId,
           trackOrder: input.trackOrder,
           status: "discovered",
-          statusMessage: "Spotify에서 인식됨",
+          statusMessage: "Imported from Spotify",
           trackName: input.track.name,
           artistNamesJson: JSON.stringify(input.track.artistNames),
           albumName: input.track.albumName,
@@ -962,6 +964,7 @@ export class AppStore {
         );
     }
 
+    await this.resequenceSyncRunTracks(syncRunId);
     await this.updateSyncRun(syncRunId, {
       spotifyScanCompletedAt: now,
       spotifyScanOffset: currentIds.size,
@@ -971,6 +974,38 @@ export class AppStore {
       scannedSpotifyTracks: currentIds.size,
       removedFromSpotify,
     };
+  }
+
+  async resequenceSyncRunTracks(syncRunId: number) {
+    const rows = await this.db
+      .select({
+        spotifyTrackId: syncRunTracks.spotifyTrackId,
+        spotifyAddedAt: syncRunTracks.spotifyAddedAt,
+        createdAt: syncRunTracks.createdAt,
+      })
+      .from(syncRunTracks)
+      .where(and(eq(syncRunTracks.userId, this.userId), eq(syncRunTracks.syncRunId, syncRunId)))
+      .orderBy(
+        asc(syncRunTracks.spotifyAddedAt),
+        asc(syncRunTracks.createdAt),
+        asc(syncRunTracks.spotifyTrackId),
+      );
+
+    for (const [trackOrder, row] of rows.entries()) {
+      await this.db
+        .update(syncRunTracks)
+        .set({
+          trackOrder,
+          updatedAt: Date.now(),
+        })
+        .where(
+          and(
+            eq(syncRunTracks.userId, this.userId),
+            eq(syncRunTracks.syncRunId, syncRunId),
+            eq(syncRunTracks.spotifyTrackId, row.spotifyTrackId),
+          ),
+        );
+    }
   }
 
   async listSyncRunTracks(
@@ -1114,6 +1149,95 @@ export class AppStore {
       totalTracks,
       completedTracks,
       remainingTracks,
+    };
+  }
+
+  async getLibrarySummary(): Promise<LibrarySummary> {
+    const rows = await this.db
+      .select({
+        searchStatus: trackMappings.searchStatus,
+        lastSyncedAt: trackMappings.lastSyncedAt,
+        manualVideoId: trackMappings.manualVideoId,
+      })
+      .from(trackMappings)
+      .where(and(eq(trackMappings.userId, this.userId), isNull(trackMappings.spotifyRemovedAt)));
+
+    return {
+      totalTracks: rows.length,
+      syncedTracks: rows.filter((row: any) => Boolean(row.lastSyncedAt)).length,
+      pendingTracks: rows.filter((row: any) => !row.lastSyncedAt).length,
+      reviewRequiredTracks: rows.filter((row: any) => row.searchStatus === "review_required").length,
+      failedTracks: rows.filter((row: any) => row.searchStatus === "failed").length,
+      noMatchTracks: rows.filter((row: any) => row.searchStatus === "no_match").length,
+      manualMatchTracks: rows.filter((row: any) => Boolean(row.manualVideoId)).length,
+    };
+  }
+
+  async getRunSummary(runId: number): Promise<RunSummary | null> {
+    const run = await this.getSyncRun(runId);
+    if (!run) {
+      return null;
+    }
+
+    const rows = await this.db
+      .select({
+        status: syncRunTracks.status,
+      })
+      .from(syncRunTracks)
+      .where(and(eq(syncRunTracks.userId, this.userId), eq(syncRunTracks.syncRunId, runId)));
+
+    const statusCounts: Record<string, number> = {};
+    for (const row of rows as Array<{ status: string }>) {
+      statusCounts[row.status] = (statusCounts[row.status] ?? 0) + 1;
+    }
+
+    const totalTracks = rows.length;
+    const skippedExistingTracks = statusCounts.skipped_existing ?? 0;
+    const insertedTracks = statusCounts.inserted ?? 0;
+    const reviewRequiredTracks = statusCounts.review_required ?? 0;
+    const failedTracks = statusCounts.failed ?? 0;
+    const noMatchTracks = statusCounts.no_match ?? 0;
+    const waitingTracks =
+      (statusCounts.waiting_for_youtube_quota ?? 0) +
+      (statusCounts.waiting_for_spotify_retry ?? 0) +
+      (statusCounts.needs_reauth ?? 0);
+    const completedTracks = TERMINAL_RUN_TRACK_STATUSES.reduce(
+      (count, status) => count + (statusCounts[status] ?? 0),
+      0,
+    );
+    const remainingTracks = Math.max(0, totalTracks - completedTracks);
+    const baselineReady = Boolean(run.playlistSnapshotCompletedAt);
+    const scopedTotalTracks = baselineReady ? Math.max(0, totalTracks - skippedExistingTracks) : null;
+    const scopedCompletedTracks =
+      baselineReady && scopedTotalTracks !== null
+        ? Math.min(
+            scopedTotalTracks,
+            insertedTracks +
+              reviewRequiredTracks +
+              failedTracks +
+              noMatchTracks +
+              (statusCounts.needs_reauth ?? 0),
+          )
+        : null;
+    const scopedRemainingTracks =
+      scopedTotalTracks !== null && scopedCompletedTracks !== null
+        ? Math.max(0, scopedTotalTracks - scopedCompletedTracks)
+        : null;
+
+    return {
+      totalTracks,
+      completedTracks,
+      remainingTracks,
+      skippedExistingTracks,
+      insertedTracks,
+      reviewRequiredTracks,
+      failedTracks,
+      noMatchTracks,
+      waitingTracks,
+      scopedTotalTracks,
+      scopedCompletedTracks,
+      scopedRemainingTracks,
+      baselineReady,
     };
   }
 
@@ -1500,6 +1624,7 @@ export class AppStore {
         activeRunUpdatedAt: null,
         activeRunTracks: [],
         activeRunEvents: [],
+        runSummary: null,
       };
     }
 
@@ -1508,12 +1633,14 @@ export class AppStore {
       activeRunUpdatedAt: activeRun.updatedAt ?? activeRun.lastHeartbeatAt ?? activeRun.startedAt,
       activeRunTracks: await this.listSyncRunTracks(activeRun.id, { page: 1, pageSize: 50 }),
       activeRunEvents: await this.listSyncRunEvents(activeRun.id, 20),
+      runSummary: await this.getRunSummary(activeRun.id),
     };
   }
 
   async getDashboardSummary() {
     const oauth = await this.listOAuthAccounts();
     const recentRuns = await this.listRecentSyncRuns(10);
+    const currentSyncState = await this.getSyncState();
     const attentionTracks = (await this.listAttentionTracks(30)).map((track: any) => ({
       spotifyTrackId: track.spotifyTrackId,
       trackName: track.trackName,
@@ -1537,6 +1664,7 @@ export class AppStore {
       reviewReasons: parseReviewReasons(track.reviewReasonsJson),
       reviewUpdatedAt: track.reviewUpdatedAt,
       playlistVideoId: track.playlistVideoId,
+      matchedSource: track.matchedSource,
       lastSyncedAt: track.lastSyncedAt,
       updatedAt: track.updatedAt,
     }));
@@ -1550,6 +1678,8 @@ export class AppStore {
       activeRun,
       recentRuns,
       attentionTracks,
+      librarySummary: await this.getLibrarySummary(),
+      lastLiveError: currentSyncState?.lastError ?? activeRun?.lastErrorSummary ?? null,
     };
   }
 

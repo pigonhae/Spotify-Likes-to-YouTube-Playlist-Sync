@@ -1,0 +1,441 @@
+import type { Language } from "../types.js";
+
+const LANGUAGE_COOKIE_NAME = "dashboard_lang";
+const DEFAULT_LANGUAGE: Language = "ko";
+
+type MessageValue = string;
+
+const MESSAGES: Record<Language, Record<string, MessageValue>> = {
+  ko: {
+    "app.title": "Spotify Likes Sync",
+    "app.tagline": "Spotify 좋아요 곡 -> YouTube 재생목록 동기화",
+    "app.subtitle":
+      "동기화 상태는 PostgreSQL에 저장되고 주기적으로 자동 갱신됩니다. 긴 제목, 오류, JSON은 내부에서 줄바꿈되거나 스크롤되어 레이아웃을 깨뜨리지 않습니다.",
+    "language.label": "언어",
+    "language.ko": "한국어",
+    "language.en": "English",
+    "language.switching": "언어 적용 중...",
+    "connection.spotify": "Spotify",
+    "connection.youtube": "YouTube",
+    "connection.connected": "연결됨",
+    "connection.needsSetup": "설정 필요",
+    "connection.notConnected": "연결되지 않음",
+    "connection.latestRefreshError": "최근 토큰 갱신 오류",
+    "connection.connectSpotify": "Spotify 연결",
+    "connection.disconnectSpotify": "Spotify 연결 해제",
+    "connection.connectYouTube": "YouTube 연결",
+    "connection.disconnectYouTube": "YouTube 연결 해제",
+    "connection.disconnectSpotifyConfirm": "Spotify 연결을 해제하고 이후 동기화를 일시 중지할까요?",
+    "connection.disconnectYouTubeConfirm": "YouTube 연결을 해제하고 관리 중인 재생목록 소유 정보도 정리할까요?",
+    "sync.panelTitle": "재생목록 및 동기화",
+    "sync.managedPlaylistId": "관리 중인 재생목록 ID",
+    "sync.playlistAutoCreated": "첫 성공적인 동기화 시 자동으로 생성됩니다.",
+    "sync.openPlaylist": "재생목록 열기",
+    "sync.runNow": "지금 동기화 실행",
+    "sync.starting": "시작하는 중...",
+    "sync.canRunNow": "두 계정이 모두 연결되어 있어 수동 실행을 바로 시작할 수 있습니다.",
+    "sync.waitingForSetupTitle": "설정 대기 중",
+    "sync.waitingForSetupBody": "Spotify와 YouTube를 모두 연결해야 동기화를 실행할 수 있습니다.",
+    "sync.playlistSafety":
+      "시스템은 재생목록 제목이나 공개 상태가 아니라 재생목록 ID를 기준으로 동작합니다. YouTube에서 제목이나 공개 상태를 바꿔도 보통 안전합니다.",
+    "sync.librarySummary": "라이브러리 상태",
+    "sync.librarySummaryValue": "{synced} / {total}곡이 YouTube에 반영됨",
+    "sync.pendingSummaryValue": "검토 또는 재시도가 필요한 곡 {count}곡",
+    "sync.runScopeTitle": "이번 실행 범위",
+    "sync.runScopeScanning": "Spotify 좋아요 목록을 다시 스캔하고 있습니다.",
+    "sync.runScopeIdle": "현재 활성 동기화가 없습니다.",
+    "sync.runScopeReady": "이번 실행에서 실제 처리할 곡 {count}곡",
+    "sync.runScopeDone": "이번 실행에서 새로 처리할 곡이 없습니다.",
+    "sync.runScopeProgress": "{completed} / {total}곡 처리됨",
+    "sync.alreadyRunning": "이미 실행 중인 동기화가 있어 현재 진행 상황을 보여주고 있습니다.",
+    "sync.started": "수동 동기화를 시작했습니다.",
+    "sync.resumed": "일시 중지된 동기화를 다시 이어서 실행했습니다.",
+    "sync.waitingYoutubeQuota": "YouTube quota 대기 상태입니다. 자동으로 다시 이어집니다.",
+    "sync.waitingSpotifyRetry": "Spotify 재시도 대기 상태입니다. 자동으로 다시 이어집니다.",
+    "sync.needsReauth": "Spotify 또는 YouTube를 다시 연결해야 동기화를 이어갈 수 있습니다.",
+    "sync.partiallyCompleted": "자동 처리는 끝났지만 일부 곡은 검토가 더 필요합니다.",
+    "sync.completed": "동기화가 완료되었습니다.",
+    "sync.startedBySchedule": "예약 동기화를 시작했습니다.",
+    "live.none": "활성 또는 대기 중인 동기화가 없습니다. 수동 동기화를 시작하거나 다음 자동 재개를 기다려 주세요.",
+    "live.title": "실시간 동기화",
+    "live.updatedAt": "업데이트 {value}",
+    "live.status": "상태",
+    "live.progress": "전체 진행률",
+    "live.remaining": "남은 곡",
+    "live.currentTrack": "현재 곡",
+    "live.nextRetry": "다음 재시도",
+    "live.lastError": "최근 오류",
+    "live.trackFlow": "Spotify 트랙 흐름",
+    "live.trackFlowHint": "실행이 진행되면 트랙 행이 여기에 나타납니다.",
+    "live.timeline": "최근 타임라인",
+    "live.timelineHint": "긴 오류와 JSON은 내부에서만 스크롤되어 페이지 폭을 늘리지 않습니다.",
+    "live.noTracks": "아직 표시할 활성 트랙이 없습니다.",
+    "live.noEvents": "아직 최근 타임라인 항목이 없습니다.",
+    "live.filter.all": "모든 곡",
+    "live.filter.active": "진행 중 상태만",
+    "live.filter.waitingYoutube": "YouTube quota 대기",
+    "live.filter.waitingSpotify": "Spotify 재시도 대기",
+    "live.filter.review": "검토 필요",
+    "live.filter.failed": "실패",
+    "live.refreshTracks": "트랙 새로고침",
+    "live.previous": "이전",
+    "live.next": "다음",
+    "live.trackPageEmpty": "이 페이지에 해당하는 트랙이 없습니다.",
+    "live.trackPageRange": "{start} - {end} / {total}곡 표시 중",
+    "live.noMatchingTracks": "이 필터에 해당하는 트랙이 없습니다.",
+    "live.staleBanner": "실시간 상태를 새로 가져오지 못했습니다. 마지막으로 확인한 상태를 표시 중입니다.",
+    "live.restoredBanner": "실시간 상태 연결이 복구되었습니다.",
+    "live.loadingError": "실시간 상태를 가져오는 중 네트워크 오류가 발생했습니다.",
+    "live.trackError": "트랙 오류",
+    "live.payload": "Payload",
+    "live.viewStats": "통계 보기",
+    "live.viewError": "오류 보기",
+    "live.scanningSpotify": "Spotify 좋아요 곡을 스캔하는 중",
+    "live.processingScope": "이번 실행의 처리 대상 진행률",
+    "runs.title": "최근 실행 내역",
+    "runs.empty": "아직 동기화 실행 내역이 없습니다.",
+    "runs.startedAt": "시작 시각",
+    "runs.finishedAt": "완료 시각",
+    "runs.stillActive": "아직 진행 중",
+    "runs.stats": "통계",
+    "runs.error": "오류",
+    "attention.title": "확인이 필요한 곡",
+    "attention.empty": "현재 수동 확인이 필요한 곡이 없습니다.",
+    "attention.reviewSection": "검토 필요",
+    "attention.retrySection": "재시도 또는 수동 확인",
+    "attention.noRecommendation":
+      "추천 후보가 저장되어 있지 않습니다. 아래에 YouTube URL 또는 video ID를 직접 입력해 주세요.",
+    "attention.acceptRecommendation": "추천 후보 채택",
+    "attention.enterManualMatch": "수동 매칭 입력",
+    "attention.replaceManualMatch": "수동 매칭 교체",
+    "attention.saveManualMatch": "수동 매칭 저장",
+    "attention.noResolvedVideo": "아직 확정된 YouTube 영상이 없습니다.",
+    "attention.resolvedRecommended": "추천 후보를 채택함",
+    "attention.resolvedManual": "수동 선택 저장됨",
+    "attention.resolvedVideo": "확정된 영상",
+    "attention.unknownChannel": "알 수 없는 채널",
+    "danger.title": "위험 구역",
+    "danger.description":
+      "저장된 토큰, 실행 이력, 캐시된 매핑, 재생목록 소유 정보, 동기화 진행 상태를 모두 지우고 싶을 때만 사용하세요.",
+    "danger.reset": "프로젝트 상태 전체 초기화",
+    "danger.resetting": "초기화하는 중...",
+    "danger.confirmPrompt": "전체 초기화를 확인하려면 RESET 을 입력하세요.",
+    "manual.placeholder": "YouTube URL 또는 video ID",
+    "message.spotifyConnected": "Spotify 계정이 연결되었습니다.",
+    "message.youtubeConnected": "YouTube 계정이 연결되었습니다.",
+    "message.spotifyAlreadyDisconnected": "Spotify는 이미 연결 해제된 상태입니다.",
+    "message.spotifyDisconnected": "Spotify 연결을 해제했습니다. 다시 연결될 때까지 동기화가 일시 중지됩니다.",
+    "message.youtubeAlreadyDisconnected": "YouTube는 이미 연결 해제된 상태입니다.",
+    "message.youtubeDisconnected": "YouTube 연결을 해제했고 관리 중인 재생목록 정보도 정리했습니다.",
+    "message.resetConfirmed": "프로젝트 상태를 모두 초기화했습니다.",
+    "message.resetNeedsConfirmation": "전체 초기화를 확인하려면 RESET 을 입력하세요.",
+    "message.recommendationAccepted": "추천 후보를 채택했습니다.",
+    "message.recommendationAlreadySelected": "이미 같은 추천 후보가 선택되어 있습니다.",
+    "message.manualSelectionSaved": "수동 매칭을 저장했습니다.",
+    "message.manualSelectionAlreadySelected": "이미 같은 YouTube 영상이 선택되어 있습니다.",
+    "message.activeOperationConflict": "다른 동기화 또는 계정 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.",
+    "message.genericError": "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    "message.playlistAccessIssue":
+      "관리 중인 YouTube 재생목록에 접근할 수 없습니다. 제목이나 공개 상태 변경 자체는 문제 원인이 아니며, 재생목록 소유권/권한 또는 연결 상태를 확인해 주세요.",
+    "message.trackNotFound": "해당 곡을 찾을 수 없습니다.",
+    "message.noRecommendationAvailable": "채택할 추천 영상이 없습니다.",
+    "message.invalidYouTubeInput": "올바른 YouTube URL 또는 video ID를 입력해 주세요.",
+    "message.notEnoughQuotaForValidation": "YouTube 영상 유효성을 확인할 quota가 부족합니다.",
+    "message.trackRemovedFromSpotify": "Spotify에서 제거된 곡은 수정할 수 없습니다.",
+    "message.trackAlreadyInserted": "이미 YouTube 재생목록에 들어간 곡은 수정할 수 없습니다.",
+    "message.manualVideoMissing": "입력한 YouTube 영상을 찾을 수 없습니다.",
+    "message.manualVideoPrivate": "비공개이거나 재생목록에 사용할 수 없는 YouTube 영상입니다.",
+    "message.manualVideoNotEmbeddable": "삽입이 제한된 YouTube 영상은 사용할 수 없습니다.",
+    "message.invalidSpotifyCallback": "Spotify callback 에 code 또는 state 가 없습니다.",
+    "message.invalidYouTubeCallback": "YouTube callback 에 code 또는 state 가 없습니다.",
+    "message.spotifyAuthFailed": "Spotify 인증이 실패했습니다: {reason}",
+    "message.youtubeAuthFailed": "YouTube 인증이 실패했습니다: {reason}",
+    "status.run.queued": "대기 중",
+    "status.run.running": "실행 중",
+    "status.run.waiting_for_youtube_quota": "YouTube quota 대기",
+    "status.run.waiting_for_spotify_retry": "Spotify 재시도 대기",
+    "status.run.needs_reauth": "재연결 필요",
+    "status.run.partially_completed": "부분 완료",
+    "status.run.completed": "완료",
+    "status.run.failed": "실패",
+    "status.track.discovered": "발견됨",
+    "status.track.searching": "검색 중",
+    "status.track.matched": "매칭됨",
+    "status.track.review_required": "검토 필요",
+    "status.track.ready_to_insert": "삽입 준비됨",
+    "status.track.inserting": "삽입 중",
+    "status.track.inserted": "삽입됨",
+    "status.track.skipped_existing": "이미 재생목록에 있음",
+    "status.track.waiting_for_youtube_quota": "YouTube quota 대기",
+    "status.track.waiting_for_spotify_retry": "Spotify 재시도 대기",
+    "status.track.needs_reauth": "재연결 필요",
+    "status.track.no_match": "매칭 없음",
+    "status.track.failed": "실패",
+    "phase.queued": "대기 중",
+    "phase.scanning_spotify": "Spotify 스캔 중",
+    "phase.loading_youtube_playlist": "YouTube 재생목록 확인 중",
+    "phase.processing_tracks": "트랙 처리 중",
+    "phase.paused": "일시 중지",
+    "phase.completed": "완료됨",
+    "phase.failed": "실패함",
+  },
+  en: {
+    "app.title": "Spotify Likes Sync",
+    "app.tagline": "Spotify liked songs -> YouTube playlist sync",
+    "app.subtitle":
+      "Run state is stored in PostgreSQL and refreshed automatically. Long titles, errors, and JSON wrap or scroll internally so the layout stays intact.",
+    "language.label": "Language",
+    "language.ko": "Korean",
+    "language.en": "English",
+    "language.switching": "Applying language...",
+    "connection.spotify": "Spotify",
+    "connection.youtube": "YouTube",
+    "connection.connected": "Connected",
+    "connection.needsSetup": "Needs setup",
+    "connection.notConnected": "Not connected",
+    "connection.latestRefreshError": "Latest token refresh error",
+    "connection.connectSpotify": "Connect Spotify",
+    "connection.disconnectSpotify": "Disconnect Spotify",
+    "connection.connectYouTube": "Connect YouTube",
+    "connection.disconnectYouTube": "Disconnect YouTube",
+    "connection.disconnectSpotifyConfirm": "Disconnect Spotify and pause future sync work?",
+    "connection.disconnectYouTubeConfirm": "Disconnect YouTube and clear managed playlist ownership state?",
+    "sync.panelTitle": "Playlist And Sync",
+    "sync.managedPlaylistId": "Managed playlist ID",
+    "sync.playlistAutoCreated": "Created automatically on the first successful sync.",
+    "sync.openPlaylist": "Open playlist",
+    "sync.runNow": "Run sync now",
+    "sync.starting": "Starting...",
+    "sync.canRunNow": "Both accounts are connected, so a manual run can start immediately.",
+    "sync.waitingForSetupTitle": "Waiting for setup",
+    "sync.waitingForSetupBody": "Both Spotify and YouTube must be connected before sync can run.",
+    "sync.playlistSafety":
+      "The service uses the playlist ID as the source of truth. Changing the title or privacy in YouTube is normally safe.",
+    "sync.librarySummary": "Library status",
+    "sync.librarySummaryValue": "{synced} / {total} tracks already reflected in YouTube",
+    "sync.pendingSummaryValue": "{count} tracks still need review or retry",
+    "sync.runScopeTitle": "This run",
+    "sync.runScopeScanning": "Scanning Spotify liked songs again.",
+    "sync.runScopeIdle": "There is no active sync run right now.",
+    "sync.runScopeReady": "{count} tracks still need work in this run",
+    "sync.runScopeDone": "No new tracks need processing in this run.",
+    "sync.runScopeProgress": "{completed} / {total} tracks processed",
+    "sync.alreadyRunning": "A sync is already running, so the dashboard is focusing on that run.",
+    "sync.started": "Started a manual sync run.",
+    "sync.resumed": "Resumed the paused sync run.",
+    "sync.waitingYoutubeQuota": "Paused for YouTube quota. The run will resume automatically.",
+    "sync.waitingSpotifyRetry": "Paused for Spotify retry. The run will resume automatically.",
+    "sync.needsReauth": "Reconnect Spotify or YouTube before sync can continue.",
+    "sync.partiallyCompleted": "Automatic processing finished, but some tracks still need review.",
+    "sync.completed": "Sync completed successfully.",
+    "sync.startedBySchedule": "Started the scheduled sync run.",
+    "live.none": "No active or waiting sync run. Start a manual sync or wait for the next automatic resume.",
+    "live.title": "Live Sync Run",
+    "live.updatedAt": "Updated {value}",
+    "live.status": "Status",
+    "live.progress": "Overall progress",
+    "live.remaining": "Remaining",
+    "live.currentTrack": "Current track",
+    "live.nextRetry": "Next retry",
+    "live.lastError": "Last error",
+    "live.trackFlow": "Spotify track flow",
+    "live.trackFlowHint": "Track rows appear here as the run progresses.",
+    "live.timeline": "Recent timeline",
+    "live.timelineHint": "Long errors and JSON scroll internally so the page width never expands.",
+    "live.noTracks": "No active track rows are available yet.",
+    "live.noEvents": "No recent timeline entries yet.",
+    "live.filter.all": "All tracks",
+    "live.filter.active": "Only active states",
+    "live.filter.waitingYoutube": "Waiting for YouTube quota",
+    "live.filter.waitingSpotify": "Waiting for Spotify retry",
+    "live.filter.review": "Review required",
+    "live.filter.failed": "Failed",
+    "live.refreshTracks": "Refresh tracks",
+    "live.previous": "Previous",
+    "live.next": "Next",
+    "live.trackPageEmpty": "No tracks on this page.",
+    "live.trackPageRange": "Showing {start} - {end} of {total} tracks",
+    "live.noMatchingTracks": "No tracks match this filter.",
+    "live.staleBanner": "Live updates failed. Showing the last known state.",
+    "live.restoredBanner": "Live updates are connected again.",
+    "live.loadingError": "A network error occurred while refreshing live status.",
+    "live.trackError": "Track error",
+    "live.payload": "Payload",
+    "live.viewStats": "View stats",
+    "live.viewError": "View error",
+    "live.scanningSpotify": "Scanning Spotify liked songs",
+    "live.processingScope": "Progress for tracks that still need work",
+    "runs.title": "Recent Runs",
+    "runs.empty": "No sync runs yet.",
+    "runs.startedAt": "Started",
+    "runs.finishedAt": "Finished",
+    "runs.stillActive": "Still active",
+    "runs.stats": "Stats",
+    "runs.error": "Error",
+    "attention.title": "Tracks Needing Attention",
+    "attention.empty": "There are no tracks that currently need manual attention.",
+    "attention.reviewSection": "Review required",
+    "attention.retrySection": "Retry or confirm manually",
+    "attention.noRecommendation":
+      "No recommended candidate was preserved for this track. Enter a YouTube URL or video ID below.",
+    "attention.acceptRecommendation": "Accept recommendation",
+    "attention.enterManualMatch": "Enter manual match",
+    "attention.replaceManualMatch": "Replace manual match",
+    "attention.saveManualMatch": "Save manual match",
+    "attention.noResolvedVideo": "No confirmed YouTube video is saved yet.",
+    "attention.resolvedRecommended": "Accepted recommended candidate",
+    "attention.resolvedManual": "Manual selection saved",
+    "attention.resolvedVideo": "Resolved video",
+    "attention.unknownChannel": "Unknown channel",
+    "danger.title": "Danger Zone",
+    "danger.description":
+      "Use this only when you intentionally want to wipe saved tokens, run history, cached mappings, playlist ownership, and sync progress.",
+    "danger.reset": "Reset all project state",
+    "danger.resetting": "Resetting...",
+    "danger.confirmPrompt": "Type RESET to confirm a full reset.",
+    "manual.placeholder": "YouTube URL or video ID",
+    "message.spotifyConnected": "Spotify account connected.",
+    "message.youtubeConnected": "YouTube account connected.",
+    "message.spotifyAlreadyDisconnected": "Spotify is already disconnected.",
+    "message.spotifyDisconnected": "Spotify disconnected. Sync will stay paused until Spotify is connected again.",
+    "message.youtubeAlreadyDisconnected": "YouTube is already disconnected.",
+    "message.youtubeDisconnected": "YouTube disconnected. Managed playlist ownership data was cleared.",
+    "message.resetConfirmed": "All project state was reset.",
+    "message.resetNeedsConfirmation": "Type RESET to confirm a full reset.",
+    "message.recommendationAccepted": "Recommendation accepted.",
+    "message.recommendationAlreadySelected": "That recommendation is already selected.",
+    "message.manualSelectionSaved": "Manual selection saved.",
+    "message.manualSelectionAlreadySelected": "That YouTube video is already selected.",
+    "message.activeOperationConflict": "Another sync or account operation is already running. Please wait and try again.",
+    "message.genericError": "The request could not be completed. Please try again shortly.",
+    "message.playlistAccessIssue":
+      "The managed YouTube playlist could not be accessed. Title/privacy changes are not the problem; check ownership, permissions, or reconnect YouTube.",
+    "message.trackNotFound": "Track not found.",
+    "message.noRecommendationAvailable": "There is no recommendation to accept.",
+    "message.invalidYouTubeInput": "Enter a valid YouTube URL or video ID.",
+    "message.notEnoughQuotaForValidation": "Not enough quota is available to validate that YouTube video.",
+    "message.trackRemovedFromSpotify": "Tracks removed from Spotify cannot be edited.",
+    "message.trackAlreadyInserted": "Tracks already inserted into the YouTube playlist cannot be edited.",
+    "message.manualVideoMissing": "The requested YouTube video could not be found.",
+    "message.manualVideoPrivate": "That YouTube video is private or cannot be used in a playlist.",
+    "message.manualVideoNotEmbeddable": "That YouTube video cannot be used because embedding is disabled.",
+    "message.invalidSpotifyCallback": "Spotify callback is missing code or state.",
+    "message.invalidYouTubeCallback": "YouTube callback is missing code or state.",
+    "message.spotifyAuthFailed": "Spotify authorization failed: {reason}",
+    "message.youtubeAuthFailed": "YouTube authorization failed: {reason}",
+    "status.run.queued": "Queued",
+    "status.run.running": "Running",
+    "status.run.waiting_for_youtube_quota": "Waiting for YouTube quota",
+    "status.run.waiting_for_spotify_retry": "Waiting for Spotify retry",
+    "status.run.needs_reauth": "Needs reauth",
+    "status.run.partially_completed": "Partially completed",
+    "status.run.completed": "Completed",
+    "status.run.failed": "Failed",
+    "status.track.discovered": "Discovered",
+    "status.track.searching": "Searching",
+    "status.track.matched": "Matched",
+    "status.track.review_required": "Review required",
+    "status.track.ready_to_insert": "Ready to insert",
+    "status.track.inserting": "Inserting",
+    "status.track.inserted": "Inserted",
+    "status.track.skipped_existing": "Already in playlist",
+    "status.track.waiting_for_youtube_quota": "Waiting for YouTube quota",
+    "status.track.waiting_for_spotify_retry": "Waiting for Spotify retry",
+    "status.track.needs_reauth": "Needs reauth",
+    "status.track.no_match": "No match",
+    "status.track.failed": "Failed",
+    "phase.queued": "Queued",
+    "phase.scanning_spotify": "Scanning Spotify",
+    "phase.loading_youtube_playlist": "Loading YouTube playlist",
+    "phase.processing_tracks": "Processing tracks",
+    "phase.paused": "Paused",
+    "phase.completed": "Completed",
+    "phase.failed": "Failed",
+  },
+};
+
+export interface TranslationParams {
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface FlashPayload {
+  key: string;
+  level?: "success" | "error";
+  params?: TranslationParams | undefined;
+}
+
+export function getLanguageCookieName() {
+  return LANGUAGE_COOKIE_NAME;
+}
+
+export function getDefaultLanguage(): Language {
+  return DEFAULT_LANGUAGE;
+}
+
+export function normalizeLanguage(value: string | null | undefined): Language {
+  return value === "en" ? "en" : DEFAULT_LANGUAGE;
+}
+
+export function getLocaleForLanguage(language: Language) {
+  return language === "en" ? "en-US" : "ko-KR";
+}
+
+export function formatDateForLanguage(
+  language: Language,
+  timestamp: number | null | undefined,
+) {
+  if (!timestamp) {
+    return "-";
+  }
+
+  return new Date(timestamp).toLocaleString(getLocaleForLanguage(language), {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+export function t(language: Language, key: string, params: TranslationParams = {}) {
+  const message = MESSAGES[language][key] ?? MESSAGES.en[key] ?? key;
+  return message.replace(/\{(\w+)\}/g, (_match, token) => {
+    const value = params[token];
+    return value === undefined || value === null ? "" : String(value);
+  });
+}
+
+export function getMessagesForLanguage(language: Language) {
+  return MESSAGES[language];
+}
+
+export function serializeMessageCatalog() {
+  return MESSAGES;
+}
+
+export function createLanguageCookie(language: Language) {
+  return `${LANGUAGE_COOKIE_NAME}=${encodeURIComponent(language)}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax`;
+}
+
+export function decodeFlashPayload(query: Record<string, unknown>) {
+  const key = typeof query.messageKey === "string" ? query.messageKey : undefined;
+  if (!key) {
+    return null;
+  }
+
+  const level = query.level === "error" ? "error" : "success";
+  const rawParams = typeof query.messageParams === "string" ? query.messageParams : undefined;
+  let params: TranslationParams | undefined;
+
+  if (rawParams) {
+    try {
+      const parsed = JSON.parse(rawParams) as TranslationParams;
+      params = typeof parsed === "object" && parsed ? parsed : undefined;
+    } catch {
+      params = undefined;
+    }
+  }
+
+  return {
+    key,
+    level,
+    params,
+  } satisfies FlashPayload;
+}

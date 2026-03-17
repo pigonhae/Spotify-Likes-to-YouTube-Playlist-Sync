@@ -2,7 +2,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AppContext } from "../app.js";
 import { AppError, ValidationError } from "../lib/errors.js";
-import { renderDashboard } from "../views/dashboard.js";
+import { parseCookies } from "../lib/cookies.js";
+import {
+  createLanguageCookie,
+  decodeFlashPayload,
+  getDefaultLanguage,
+  normalizeLanguage,
+  t,
+  type FlashPayload,
+} from "../lib/i18n.js";
+import { LocalizedError } from "../lib/localized-error.js";
+import { renderDashboard, renderDashboardSections } from "../views/dashboard.js";
 
 type FlashLevel = "success" | "error";
 type TrackFilter =
@@ -24,20 +34,26 @@ type TrackFilter =
 
 export async function registerRoutes(app: FastifyInstance, context: AppContext) {
   const basicAuthGuard = app.basicAuth;
-  const redirectWithFlash = (reply: FastifyReply, message: string, level: FlashLevel = "success") =>
-    reply.redirect(`/?message=${encodeURIComponent(message)}&level=${encodeURIComponent(level)}`);
+  const redirectWithFlash = (
+    reply: FastifyReply,
+    payload: FlashPayload,
+  ) =>
+    reply.redirect(
+      `/?messageKey=${encodeURIComponent(payload.key)}&level=${encodeURIComponent(payload.level ?? "success")}&messageParams=${encodeURIComponent(JSON.stringify(payload.params ?? {}))}`,
+    );
 
   const handleDashboardAction = async <T>(
+    request: FastifyRequest,
     reply: FastifyReply,
     action: () => Promise<T> | T,
-    onSuccess: (result: T) => string,
+    onSuccess: (result: T) => FlashPayload,
   ) => {
     try {
       const result = await action();
-      return redirectWithFlash(reply, onSuccess(result), "success");
+      return redirectWithFlash(reply, onSuccess(result));
     } catch (error) {
       if (error instanceof AppError) {
-        return redirectWithFlash(reply, error.message, "error");
+        return redirectWithFlash(reply, getFlashFromError(error, request));
       }
 
       throw error;
@@ -45,31 +61,46 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   };
 
   app.get("/", { onRequest: basicAuthGuard }, async (request, reply) => {
+    const language = getRequestLanguage(request);
     const query = request.query as Record<string, unknown>;
-    const message = typeof query.message === "string" ? query.message : undefined;
-    const messageLevel: FlashLevel = query.level === "error" ? "error" : "success";
-    const [summary, accounts] = await Promise.all([
-      context.store.getDashboardLiveData(),
-      context.store.listOAuthAccounts(),
-    ]);
+    const flashPayload = decodeFlashPayload(query);
+    const payload = await buildDashboardPayload(context, language);
 
     const html = renderDashboard({
-      ...(message ? { message } : {}),
-      ...(message ? { messageLevel } : {}),
-      summary,
-      accounts: accounts.map((account: any) => ({
-        provider: account.provider,
-        externalDisplayName: account.externalDisplayName,
-        invalidatedAt: account.invalidatedAt,
-        lastRefreshError: account.lastRefreshError,
-      })),
+      language,
+      summary: payload.summary,
+      accounts: payload.accounts,
+      message: flashPayload ? t(language, flashPayload.key, flashPayload.params) : undefined,
+      messageLevel: flashPayload?.level ?? "success",
     });
 
     reply.type("text/html; charset=utf-8").send(html);
   });
 
-  app.get("/api/dashboard/live", { onRequest: basicAuthGuard }, async () => {
-    return context.store.getDashboardLiveData();
+  app.get("/api/dashboard/live", { onRequest: basicAuthGuard }, async (request) => {
+    const language = getRequestLanguage(request);
+    const payload = await buildDashboardPayload(context, language);
+
+    return {
+      ...payload,
+      language,
+      sections: renderDashboardSections({
+        language,
+        summary: payload.summary,
+        accounts: payload.accounts,
+      }),
+    };
+  });
+
+  app.post("/api/preferences/language", { onRequest: basicAuthGuard }, async (request, reply) => {
+    const body = request.body as { language?: string } | undefined;
+    const language = normalizeLanguage(body?.language);
+
+    reply.header("set-cookie", createLanguageCookie(language));
+    return {
+      ok: true,
+      language,
+    };
   });
 
   app.get("/api/sync-runs/:runId/tracks", { onRequest: basicAuthGuard }, async (request) => {
@@ -120,72 +151,107 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
   app.get("/auth/spotify/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`Spotify authorization failed: ${query.error}`, 400);
+      return redirectWithFlash(reply, {
+        key: "message.spotifyAuthFailed",
+        level: "error",
+        params: { reason: query.error },
+      });
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("Spotify callback is missing code or state.");
+      return redirectWithFlash(reply, {
+        key: "message.invalidSpotifyCallback",
+        level: "error",
+      });
     }
 
     await context.oauthService.handleSpotifyCallback(query.code, query.state);
-    return redirectWithFlash(reply, "Spotify account connected.");
+    return redirectWithFlash(reply, { key: "message.spotifyConnected", level: "success" });
   });
 
   app.get("/auth/youtube/callback", { onRequest: basicAuthGuard }, async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     if (query.error) {
-      throw new AppError(`YouTube authorization failed: ${query.error}`, 400);
+      return redirectWithFlash(reply, {
+        key: "message.youtubeAuthFailed",
+        level: "error",
+        params: { reason: query.error },
+      });
     }
     if (!query.code || !query.state) {
-      throw new ValidationError("YouTube callback is missing code or state.");
+      return redirectWithFlash(reply, {
+        key: "message.invalidYouTubeCallback",
+        level: "error",
+      });
     }
 
     await context.oauthService.handleYouTubeCallback(query.code, query.state);
-    return redirectWithFlash(reply, "YouTube account connected.");
+    return redirectWithFlash(reply, { key: "message.youtubeConnected", level: "success" });
   });
 
-  app.post("/admin/sync", { onRequest: basicAuthGuard }, async (_request, reply) => {
-    const result = await context.syncService.run("manual");
-    return redirectWithFlash(reply, formatSyncFlashMessage(result), "success");
+  app.post("/admin/sync", { onRequest: basicAuthGuard }, async (request, reply) => {
+    try {
+      const result = await context.syncService.run("manual");
+      return redirectWithFlash(reply, formatSyncFlashMessage(result));
+    } catch (error) {
+      if (error instanceof AppError) {
+        return redirectWithFlash(reply, getFlashFromError(error, request));
+      }
+
+      throw error;
+    }
   });
 
   app.post(
     "/admin/connections/spotify/disconnect",
     { onRequest: basicAuthGuard },
-    async (_request, reply) =>
+    async (request, reply) =>
       handleDashboardAction(
+        request,
         reply,
         () => context.accountManagementService.disconnectSpotify(),
-        (result) =>
-          result.alreadyDisconnected
-            ? "Spotify is already disconnected."
-            : "Spotify disconnected. Sync will stay paused until Spotify is connected again.",
+        (result) => ({
+          key: result.alreadyDisconnected
+            ? "message.spotifyAlreadyDisconnected"
+            : "message.spotifyDisconnected",
+          level: "success",
+        }),
       ),
   );
 
   app.post(
     "/admin/connections/youtube/disconnect",
     { onRequest: basicAuthGuard },
-    async (_request, reply) =>
+    async (request, reply) =>
       handleDashboardAction(
+        request,
         reply,
         () => context.accountManagementService.disconnectYouTube(),
-        (result) =>
-          result.alreadyDisconnected
-            ? "YouTube is already disconnected."
-            : "YouTube disconnected. Managed playlist ownership data was cleared.",
+        (result) => ({
+          key: result.alreadyDisconnected
+            ? "message.youtubeAlreadyDisconnected"
+            : "message.youtubeDisconnected",
+          level: "success",
+        }),
       ),
   );
 
   app.post("/admin/reset", { onRequest: basicAuthGuard }, async (request, reply) => {
     const body = request.body as { confirmationText?: string } | undefined;
     if (body?.confirmationText !== "RESET") {
-      return redirectWithFlash(reply, "Type RESET to confirm a full reset.", "error");
+      return redirectWithFlash(reply, {
+        key: "message.resetNeedsConfirmation",
+        level: "error",
+      });
     }
 
     return handleDashboardAction(
+      request,
       reply,
       () => context.accountManagementService.resetAll(),
-      () => "All project state was reset.",
+      () => ({
+        key: "message.resetConfirmed",
+        level: "success",
+      }),
     );
   });
 
@@ -194,12 +260,18 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     { onRequest: basicAuthGuard },
     async (request, reply) =>
       handleDashboardAction(
+        request,
         reply,
         async () => {
           const params = request.params as { spotifyTrackId: string };
           return context.trackReviewService.acceptRecommendation(params.spotifyTrackId);
         },
-        (result) => result.alreadySelected ? "That recommendation is already selected." : "Recommendation accepted.",
+        (result) => ({
+          key: result.alreadySelected
+            ? "message.recommendationAlreadySelected"
+            : "message.recommendationAccepted",
+          level: "success",
+        }),
       ),
   );
 
@@ -208,13 +280,19 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     { onRequest: basicAuthGuard },
     async (request, reply) =>
       handleDashboardAction(
+        request,
         reply,
         async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
           return context.trackReviewService.saveManualSelection(params.spotifyTrackId, body.videoInput ?? "");
         },
-        (result) => result.alreadySelected ? "That YouTube video is already selected." : "Manual selection saved.",
+        (result) => ({
+          key: result.alreadySelected
+            ? "message.manualSelectionAlreadySelected"
+            : "message.manualSelectionSaved",
+          level: "success",
+        }),
       ),
   );
 
@@ -223,32 +301,114 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     { onRequest: basicAuthGuard },
     async (request, reply) =>
       handleDashboardAction(
+        request,
         reply,
         async () => {
           const params = request.params as { spotifyTrackId: string };
           const body = request.body as { videoInput?: string };
           return context.trackReviewService.saveManualSelection(params.spotifyTrackId, body.videoInput ?? "");
         },
-        (result) => result.alreadySelected ? "That YouTube video is already selected." : "Manual selection saved.",
+        (result) => ({
+          key: result.alreadySelected
+            ? "message.manualSelectionAlreadySelected"
+            : "message.manualSelectionSaved",
+          level: "success",
+        }),
       ),
   );
 }
 
-function formatSyncFlashMessage(result: { status: string }) {
-  switch (result.status) {
-    case "waiting_for_youtube_quota":
-      return "Paused for YouTube quota. The run will resume automatically.";
-    case "waiting_for_spotify_retry":
-      return "Paused for Spotify retry. The run will resume automatically.";
-    case "needs_reauth":
-      return "Paused until Spotify or YouTube is reconnected.";
-    case "partially_completed":
-      return "Automatic processing finished, but some tracks still need review.";
-    case "completed":
-      return "Sync completed successfully.";
-    default:
-      return "Sync started.";
+async function buildDashboardPayload(context: AppContext, language: "ko" | "en") {
+  const [summary, accounts] = await Promise.all([
+    context.store.getDashboardLiveData(),
+    context.store.listOAuthAccounts(),
+  ]);
+
+  return {
+    language,
+    summary,
+    accounts: accounts.map((account: any) => ({
+      provider: account.provider,
+      externalDisplayName: account.externalDisplayName,
+      invalidatedAt: account.invalidatedAt,
+      lastRefreshError: account.lastRefreshError,
+    })),
+  };
+}
+
+function getRequestLanguage(request: FastifyRequest) {
+  const query = request.query as Record<string, unknown> | undefined;
+  const queryLanguage =
+    query && typeof query.language === "string" ? query.language : undefined;
+  if (queryLanguage) {
+    return normalizeLanguage(queryLanguage);
   }
+
+  const cookies = parseCookies(request.headers.cookie);
+  return normalizeLanguage(cookies.dashboard_lang ?? getDefaultLanguage());
+}
+
+function formatSyncFlashMessage(result: { status: string; disposition?: string }): FlashPayload {
+  if (result.disposition === "already_running") {
+    return { key: "sync.alreadyRunning", level: "success" };
+  }
+
+  if (result.status === "waiting_for_youtube_quota") {
+    return { key: "sync.waitingYoutubeQuota", level: "success" };
+  }
+
+  if (result.status === "waiting_for_spotify_retry") {
+    return { key: "sync.waitingSpotifyRetry", level: "success" };
+  }
+
+  if (result.status === "needs_reauth") {
+    return { key: "sync.needsReauth", level: "error" };
+  }
+
+  if (result.status === "partially_completed") {
+    return { key: "sync.partiallyCompleted", level: "success" };
+  }
+
+  if (result.status === "completed") {
+    return {
+      key: result.disposition === "resumed" ? "sync.resumed" : "sync.completed",
+      level: "success",
+    };
+  }
+
+  return {
+    key: result.disposition === "resumed" ? "sync.resumed" : "sync.started",
+    level: "success",
+  };
+}
+
+function getFlashFromError(error: AppError, request: FastifyRequest): FlashPayload {
+  if (error instanceof LocalizedError) {
+    return {
+      key: error.messageKey,
+      level: "error",
+      params: error.messageParams,
+    };
+  }
+
+  const language = getRequestLanguage(request);
+  return {
+    key: inferFallbackErrorKey(error.message, language),
+    level: "error",
+    params: error.message ? { detail: error.message } : undefined,
+  };
+}
+
+function inferFallbackErrorKey(message: string, language: "ko" | "en") {
+  if (message.includes("playlist") && message.includes("access")) {
+    return "message.playlistAccessIssue";
+  }
+
+  if (message.includes("lock") || message.includes("already running") || message.includes("already in progress")) {
+    return "message.activeOperationConflict";
+  }
+
+  return language === "ko" ? "message.genericError" : "message.genericError";
 }
 
 function isTrackFilter(value: string | undefined): value is TrackFilter {

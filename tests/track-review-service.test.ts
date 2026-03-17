@@ -91,7 +91,7 @@ describe("TrackReviewService", () => {
     );
 
     await expect(service.saveManualSelection("spotify-track-3", "not-a-youtube-url")).rejects.toThrow(
-      "올바른 YouTube URL 또는 video ID",
+      "Enter a valid YouTube URL or video ID.",
     );
     expect(getVideos).not.toHaveBeenCalled();
 
@@ -113,7 +113,7 @@ describe("TrackReviewService", () => {
     );
 
     await expect(service.saveManualSelection("spotify-track-4", "dQw4w9WgXcQ")).rejects.toThrow(
-      "이미 YouTube 재생목록에 추가된 곡은 수정할 수 없습니다.",
+      "Tracks already inserted into the YouTube playlist cannot be edited.",
     );
 
     await close();

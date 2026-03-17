@@ -5,6 +5,7 @@ import { renderDashboard } from "../src/views/dashboard.js";
 describe("renderDashboard", () => {
   it("hides disconnect controls when nothing is connected", () => {
     const html = renderDashboard({
+      language: "en",
       summary: createSummary({}),
       accounts: [],
     });
@@ -17,6 +18,7 @@ describe("renderDashboard", () => {
 
   it("shows the connected provider disconnect control", () => {
     const html = renderDashboard({
+      language: "en",
       summary: createSummary({
         spotifyConnected: true,
       }),
@@ -37,6 +39,7 @@ describe("renderDashboard", () => {
 
   it("renders recent runs as cards with log disclosures", () => {
     const html = renderDashboard({
+      language: "en",
       summary: createSummary({
         recentRuns: [
           {
@@ -70,6 +73,7 @@ describe("renderDashboard", () => {
 
   it("renders the live sync panel with active run progress", () => {
     const html = renderDashboard({
+      language: "en",
       summary: createSummary({
         activeRun: {
           id: 11,
@@ -98,6 +102,21 @@ describe("renderDashboard", () => {
           errorSummary: "YouTube quota exceeded",
         },
         activeRunUpdatedAt: Date.parse("2026-03-17T00:10:00.000Z"),
+        runSummary: {
+          totalTracks: 120,
+          completedTracks: 90,
+          remainingTracks: 30,
+          skippedExistingTracks: 10,
+          insertedTracks: 80,
+          reviewRequiredTracks: 0,
+          failedTracks: 0,
+          noMatchTracks: 0,
+          waitingTracks: 0,
+          scopedTotalTracks: 110,
+          scopedCompletedTracks: 90,
+          scopedRemainingTracks: 20,
+          baselineReady: true,
+        },
         activeRunTracks: [
           {
             spotifyTrackId: "spotify-track-1",
@@ -147,6 +166,7 @@ describe("renderDashboard", () => {
 
   it("renders review cards with recommendation actions and manual entry controls", () => {
     const html = renderDashboard({
+      language: "en",
       summary: createSummary({
         attentionTracks: [
           {
@@ -202,11 +222,22 @@ function createBaseSummary() {
     youtubeConnected: false,
     playlistId: null,
     lastRunAt: null,
+    librarySummary: {
+      totalTracks: 0,
+      syncedTracks: 0,
+      pendingTracks: 0,
+      reviewRequiredTracks: 0,
+      failedTracks: 0,
+      noMatchTracks: 0,
+      manualMatchTracks: 0,
+    },
     activeRun: null,
     activeRunUpdatedAt: null,
+    runSummary: null,
     activeRunTracks: [],
     activeRunEvents: [],
     recentRuns: [],
     attentionTracks: [],
+    lastLiveError: null,
   };
 }

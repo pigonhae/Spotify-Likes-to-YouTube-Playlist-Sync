@@ -1,5 +1,5 @@
 import type { AppStore } from "../db/store.js";
-import { AppError, QuotaExceededError, ValidationError } from "../lib/errors.js";
+import { LocalizedError } from "../lib/localized-error.js";
 import { extractYouTubeVideoId } from "../lib/youtube.js";
 import type { SearchCandidate } from "../types.js";
 import { QuotaService } from "./quota-service.js";
@@ -21,7 +21,7 @@ export class TrackReviewService {
     const track = await this.store.getTrackBySpotifyId(spotifyTrackId);
 
     if (!track) {
-      throw new AppError("곡을 찾을 수 없습니다.", 404);
+      throw new LocalizedError("Track not found.", 404, "message.trackNotFound");
     }
 
     this.assertTrackCanBeEdited(track);
@@ -35,7 +35,11 @@ export class TrackReviewService {
         };
       }
 
-      throw new ValidationError("채택할 추천 영상이 없습니다.");
+      throw new LocalizedError(
+        "There is no recommendation to accept.",
+        400,
+        "message.noRecommendationAvailable",
+      );
     }
 
     if (track.manualVideoId === reviewVideoId && track.searchStatus === "matched_manual") {
@@ -63,14 +67,14 @@ export class TrackReviewService {
     const track = await this.store.getTrackBySpotifyId(spotifyTrackId);
 
     if (!track) {
-      throw new AppError("곡을 찾을 수 없습니다.", 404);
+      throw new LocalizedError("Track not found.", 404, "message.trackNotFound");
     }
 
     this.assertTrackCanBeEdited(track);
 
     const videoId = extractYouTubeVideoId(videoInput);
     if (!videoId) {
-      throw new ValidationError("올바른 YouTube URL 또는 video ID를 입력해 주세요.");
+      throw new LocalizedError("Enter a valid YouTube URL or video ID.", 400, "message.invalidYouTubeInput");
     }
 
     if (track.manualVideoId === videoId && track.searchStatus === "matched_manual") {
@@ -81,13 +85,17 @@ export class TrackReviewService {
     }
 
     if (!(await this.quotaService.hasRoom(1))) {
-      throw new QuotaExceededError("YouTube 영상 유효성을 확인할 quota가 부족합니다.");
+      throw new LocalizedError(
+        "Not enough quota is available to validate that YouTube video.",
+        429,
+        "message.notEnoughQuotaForValidation",
+      );
     }
 
     const [video] = await this.youtubeClient.getVideos([videoId]);
     await this.quotaService.charge(1);
 
-    const candidate = this.validateManualCandidate(videoId, video);
+    const candidate = this.validateManualCandidate(video);
     await this.store.setManualVideoId(spotifyTrackId, candidate.videoId, {
       matchedVideoTitle: candidate.title,
       matchedChannelTitle: candidate.channelTitle,
@@ -108,25 +116,45 @@ export class TrackReviewService {
     lastSyncedAt: number | null;
   }) {
     if (track.spotifyRemovedAt) {
-      throw new AppError("Spotify에서 이미 제거된 곡은 수정할 수 없습니다.", 409);
+      throw new LocalizedError(
+        "Tracks removed from Spotify cannot be edited.",
+        409,
+        "message.trackRemovedFromSpotify",
+      );
     }
 
     if (track.playlistVideoId || track.lastSyncedAt) {
-      throw new AppError("이미 YouTube 재생목록에 추가된 곡은 수정할 수 없습니다.", 409);
+      throw new LocalizedError(
+        "Tracks already inserted into the YouTube playlist cannot be edited.",
+        409,
+        "message.trackAlreadyInserted",
+      );
     }
   }
 
-  private validateManualCandidate(videoId: string, candidate?: SearchCandidate) {
+  private validateManualCandidate(candidate?: SearchCandidate) {
     if (!candidate) {
-      throw new ValidationError("입력한 YouTube 영상이 존재하지 않거나 확인할 수 없습니다.");
+      throw new LocalizedError(
+        "The requested YouTube video could not be found.",
+        400,
+        "message.manualVideoMissing",
+      );
     }
 
     if (candidate.isSyndicated === false) {
-      throw new ValidationError("비공개이거나 재생목록에 사용할 수 없는 YouTube 영상입니다.");
+      throw new LocalizedError(
+        "That YouTube video is private or cannot be used in a playlist.",
+        400,
+        "message.manualVideoPrivate",
+      );
     }
 
     if (candidate.isEmbeddable === false) {
-      throw new ValidationError("삽입이 제한된 YouTube 영상은 사용할 수 없습니다.");
+      throw new LocalizedError(
+        "That YouTube video cannot be used because embedding is disabled.",
+        400,
+        "message.manualVideoNotEmbeddable",
+      );
     }
 
     return candidate;

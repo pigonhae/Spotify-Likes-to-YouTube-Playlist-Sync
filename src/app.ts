@@ -38,6 +38,7 @@ export async function buildApp() {
 
   app.get("/health", async () => ({
     ok: true,
+    process: "web",
     timestamp: new Date().toISOString(),
   }));
 

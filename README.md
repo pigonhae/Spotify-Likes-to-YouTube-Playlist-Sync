@@ -1,48 +1,81 @@
 # Spotify Likes -> YouTube Playlist Sync
 
-Spotify 좋아요 곡을 주기적으로 읽어서 YouTube 재생목록으로 동기화하는 개인용 서비스입니다.
+Sync Spotify liked songs into a managed YouTube playlist with persistent PostgreSQL-backed state, resumable jobs, manual review for ambiguous matches, and Railway-friendly web/worker deployment.
 
-이번 버전부터 핵심 상태는 모두 PostgreSQL에 저장됩니다. Railway 재배포, 재시작, 스케일링 이후에도 아래 데이터가 유지됩니다.
+## What This Service Does
 
-- Spotify / YouTube OAuth 토큰
-- 연결 상태와 외부 계정 정보
-- YouTube playlist ID
-- Spotify track -> YouTube video 매핑
-- 재생목록 캐시
-- 동기화 실행 로그
-- quota ledger와 앱 설정
+- Connects one Spotify account and one YouTube account
+- Scans Spotify liked songs
+- Matches tracks to YouTube videos
+- Inserts matched videos into one managed YouTube playlist
+- Stores progress, mappings, retries, quota pauses, and review-needed tracks in PostgreSQL
+- Lets you review low-confidence matches or override them manually from the dashboard
 
-## 기술 스택
+## Current Architecture
 
-- Node.js 22
-- TypeScript
-- Fastify
-- PostgreSQL
-- Drizzle ORM
-- Railway web + worker
+- `web`
+  - Fastify HTTP server
+  - SSR dashboard in `src/views/dashboard.ts`
+  - OAuth callbacks, manual actions, live dashboard API, `/health`
+- `worker`
+  - Railway scheduler loop
+  - Resumes quota-paused / retry-paused runs
+  - Starts scheduled sync work
+  - Exposes its own `/health` endpoint for Railway health checks
+- `PostgreSQL`
+  - OAuth accounts
+  - managed playlist ownership
+  - track mappings and review candidates
+  - sync runs, run tracks, run events, sync state, and lock state
 
-## 환경변수
+## UX / Behavior Notes
 
-`.env.example`을 복사해 `.env`를 만드세요.
+- The dashboard supports Korean and English. The selected language is stored in a cookie.
+- Live progress updates use polling, not SSE/websockets. This keeps the implementation simple and stable on Railway.
+- `Run sync now` is idempotent from a UX perspective:
+  - if a run is already active, the UI focuses on the existing run
+  - if a paused run is resumable, the service resumes it
+  - progress shows both library-wide status and the actual scope of work for the current run
+- The sync logic works from the managed YouTube playlist ID, not the playlist title or privacy setting.
+- If the user renames the playlist or changes privacy between `public`, `unlisted`, and `private`, the service should still work as long as the authenticated YouTube account can still access that playlist ID.
+- Spotify liked songs are processed oldest-first during insertion so the YouTube playlist order more closely matches original Spotify like order.
 
-핵심 값:
+## Environment Variables
+
+Required:
 
 - `DATABASE_URL`
-  - 예: `postgres://postgres:postgres@127.0.0.1:5432/spotifyplaylist`
-- `OWNER_USER_KEY`
-  - 단일 사용자 앱의 owner row 식별자
-- `DATABASE_POOL_MAX`
-  - 기본 5
-- `DATABASE_SSL`
-  - Railway Postgres를 외부 URL로 붙일 때는 보통 `true`
 - `TOKEN_ENCRYPTION_KEY`
-  - 64자리 hex 문자열
+- `APP_BASIC_AUTH_USER`
+- `APP_BASIC_AUTH_PASS`
+- `SPOTIFY_CLIENT_ID`
+- `SPOTIFY_CLIENT_SECRET`
+- `SPOTIFY_REDIRECT_URI`
+- `YOUTUBE_CLIENT_ID`
+- `YOUTUBE_CLIENT_SECRET`
+- `YOUTUBE_REDIRECT_URI`
+- `APP_BASE_URL`
+
+Common optional values:
+
+- `HOST`
+  - defaults to `0.0.0.0` in production
+- `PORT`
+  - Railway should provide this automatically
+- `DATABASE_SSL`
+  - usually `true` on Railway Postgres
+- `DATABASE_POOL_MAX`
+  - defaults to `5`
+- `OWNER_USER_KEY`
+  - defaults to a single owner row
 - `SCHEDULER_POLL_INTERVAL_MS`
-  - Railway worker 폴링 주기, 기본 60000ms
+  - defaults to `60000`
+- `YOUTUBE_DAILY_QUOTA_LIMIT`
+  - defaults to the standard daily quota
+- `YOUTUBE_PLAYLIST_ID`
+  - optional fixed managed playlist ID
 
-기존 `DATABASE_PATH`는 더 이상 사용하지 않습니다.
-
-## 로컬 실행
+## Local Development
 
 ```bash
 npm install
@@ -50,112 +83,91 @@ npm run db:migrate
 npm run dev
 ```
 
-브라우저에서 `http://127.0.0.1:3000`에 접속한 뒤 Basic Auth로 로그인하고 Spotify/YouTube를 연결하세요.
+Open `http://127.0.0.1:3000` and log in with basic auth.
 
-## PostgreSQL 스키마
+## Railway Deployment
 
-핵심 테이블:
+Use two Railway services from the same repo.
 
-- `users`
-  - owner 사용자 1명 보관
-- `oauth_accounts`
-  - provider별 access token, refresh token, 만료시각, 외부 계정 식별자
-- `oauth_states`
-  - OAuth state nonce
-- `user_settings`
-  - playlist ID, quota ledger, 기타 설정
-- `track_mappings`
-  - Spotify 스냅샷, 검색 상태, 수동 override, 매핑 이력
-- `playlist_videos`
-  - YouTube playlist 캐시
-- `sync_runs`
-  - 최근 동기화 실행 로그, `stats_json`은 JSONB
-- `sync_state`
-  - 마지막 시작/성공/실패 시각과 마지막 오류
-- `sync_lock`
-  - DB 기반 동시 실행 방지 락
+### Web service
 
-## 데이터가 유지되는 방식
+- Start command: `npm run start:web`
+- Must expose HTTP and bind `PORT`
+- Health check path: `/health`
 
-앱은 더 이상 메모리나 로컬 SQLite 파일을 source of truth로 쓰지 않습니다.
+### Worker service
 
-- 서버 시작 시 PostgreSQL에 연결합니다.
-- 마이그레이션을 적용합니다.
-- `OWNER_USER_KEY`에 해당하는 owner 사용자를 보장합니다.
-- 이후 OAuth, 동기화, 대시보드 렌더링은 모두 PostgreSQL만 읽고 씁니다.
+- Start command: `npm run start:worker`
+- Runs the scheduler loop
+- Also exposes HTTP for Railway health checks
+- Health check path: `/health`
 
-그래서 Railway가 재배포되거나 재시작되어도:
+### Why health checks were failing before
 
-- 연결 상태가 남아 있고
-- refresh token이 유지되며
-- playlist ID와 매핑 이력이 유지되고
-- 중복 추가 방지가 계속 동작합니다.
+The worker process was not acting like an HTTP service, while Railway health checks were still targeting `/health`. That means Railway could mark the service unhealthy even though the scheduler code itself was valid. The worker now boots a minimal Fastify host first, exposes `/health`, and only then starts the long-running scheduler loop asynchronously.
 
-## 스케줄링 구조
-
-이제 GitHub Actions는 필요하지 않습니다. 모든 예약 실행과 자동 재개는 Railway 내부에서만 동작합니다.
-
-- `web` 서비스
-  - 대시보드, OAuth, 수동 `/admin/sync`, 상태 조회 담당
-- `worker` 서비스
-  - 매시 17분 정기 sync 시작
-  - `queued` / `waiting_for_youtube_quota` / `waiting_for_spotify_retry` / stale `running` run 재개
-  - 기본 60초마다 DB를 폴링하며 다음 작업을 판단
-
-스케줄러는 메모리 상태가 아니라 PostgreSQL의 `sync_runs`, `sync_state`, `sync_lock`를 기준으로 동작합니다.
-
-- `sync_runs.status`, `next_retry_at`, `last_heartbeat_at`으로 재개 대상을 결정합니다.
-- `sync_lock`의 `hourly-sync` 락으로 web 수동 실행과 worker 자동 실행이 동시에 같은 작업을 집지 못하게 막습니다.
-- 같은 시간 슬롯에 이미 `trigger = schedule` run이 있으면 worker가 새 hourly run을 만들지 않습니다.
-- 재배포 도중 죽은 `running` run은 heartbeat가 stale 해지면 worker가 다시 재개합니다.
-- `needs_reauth`는 자동 재시도하지 않고 사용자 재연결을 기다립니다.
-
-## Railway 배포
-
-1. Railway 프로젝트에 `PostgreSQL` 서비스를 추가합니다.
-2. 동일 리포지토리로 서비스 2개를 만듭니다.
-3. `web` 서비스 시작 명령은 `npm run start:web`로 설정합니다.
-4. `worker` 서비스 시작 명령은 `npm run start:worker`로 설정합니다.
-5. 두 서비스에 아래 변수를 넣습니다.
+### Recommended Railway variables
 
 ```env
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=8080
-APP_BASE_URL=https://YOUR-APP.up.railway.app
-DATABASE_URL=${{ Postgres.DATABASE_URL }}
 DATABASE_SSL=true
 DATABASE_POOL_MAX=5
 OWNER_USER_KEY=default-owner
 SCHEDULER_POLL_INTERVAL_MS=60000
 ```
 
-6. 나머지 Spotify / Google / YouTube 환경변수도 설정합니다.
-7. 배포 후 `npm run db:migrate`가 필요하면 한 번 실행합니다.
-8. 대시보드에서 Spotify와 YouTube를 연결합니다.
+`railway.toml` contains shared build and health-check defaults. Role separation is handled by Railway service start commands.
 
-`railway.toml`은 공통 build/healthcheck만 정의합니다. 실제 역할 분리는 Railway 서비스별 Start Command에서 처리합니다.
+## Playlist Metadata Safety
 
-## 운영 메모
+The sync engine uses playlist ID as the durable key.
 
-- GitHub Actions workflow나 외부 cron은 더 이상 필요하지 않습니다.
-- 장애가 나면 Railway `worker` 로그부터 확인하세요.
-- 진행 상태와 최근 실행 이력은 대시보드와 `sync_runs` / `sync_run_events`에서 확인할 수 있습니다.
-- 수동 실행과 자동 실행이 충돌하면 락 때문에 한쪽만 실행되고, 다른 쪽은 건너뜁니다.
-- quota 대기와 Spotify retry 대기는 `next_retry_at` 기준으로 worker가 자동 재개합니다.
-- Railway 재시작 후에도 worker는 DB 상태를 읽어 이어서 처리합니다.
+- Safe:
+  - rename the playlist
+  - change privacy between `public`, `unlisted`, and `private`
+- Not safe:
+  - deleting the playlist
+  - removing access for the connected YouTube account
 
-## 중요한 운영 메모
+If access is lost, the service now surfaces that as a playlist access problem instead of implying that the title/privacy change itself broke sync.
 
-- 기존 SQLite 데이터는 자동 이전하지 않습니다.
-- Postgres 전환 후에는 새 상태로 다시 연결해야 합니다.
-- 토큰은 AES-256-GCM으로 암호화되어 DB에 저장됩니다.
-- 민감한 토큰 값은 로그에 출력하지 않습니다.
+## Live Progress Model
 
-## 검증 명령어
+The dashboard now separates:
+
+- `librarySummary`
+  - cumulative state across the managed library
+- `runSummary`
+  - actual work scope for the active run
+
+That prevents the UX problem where pressing `Run sync now` looked like a full reset back to `0%` even when most tracks were already synced or already present in the playlist.
+
+## Important Scripts
 
 ```bash
 npm run check
 npm test
 npm run build
+npm run start:web
+npm run start:worker
 ```
+
+## Test Coverage Added For This Stabilization Work
+
+- dashboard rendering in both old and new layout paths
+- live dashboard API shape
+- language preference persistence
+- manual review flows
+- sync duplicate prevention
+- resumable/manual sync conflict behavior
+- oldest-first insertion ordering
+- worker `/health` endpoint behavior
+
+## Operational Notes
+
+- Sync state survives Railway restarts because state lives in PostgreSQL.
+- Quota waits and Spotify retry waits resume from persisted run state.
+- Manual mappings and review-required tracks are preserved across restarts.
+- The system avoids duplicate inserts by checking cached mappings and playlist contents.

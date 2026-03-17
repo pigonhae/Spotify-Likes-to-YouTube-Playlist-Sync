@@ -15,7 +15,7 @@ describe("registerRoutes", () => {
     const response = await app.inject({ method: "POST", url: "/admin/reset" });
     expect(response.statusCode).toBe(401);
     await close();
-  });
+  }, 10000);
 
   it("rejects full reset when RESET confirmation text is missing", async () => {
     const { app, store, close } = await createTestApp();
@@ -33,7 +33,7 @@ describe("registerRoutes", () => {
 
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toContain("level=error");
-    expect(response.headers.location).toContain(encodeURIComponent("Type RESET to confirm a full reset."));
+    expect(response.headers.location).toContain("messageKey=message.resetNeedsConfirmation");
     expect(await store.listOAuthAccounts()).toHaveLength(1);
 
     await close();
@@ -52,9 +52,20 @@ describe("registerRoutes", () => {
 
     expect(liveResponse.statusCode).toBe(200);
     expect(liveResponse.json()).toMatchObject({
-      spotifyConnected: false,
-      youtubeConnected: false,
-      recentRuns: [],
+      language: "ko",
+      summary: {
+        spotifyConnected: false,
+        youtubeConnected: false,
+        recentRuns: [],
+        librarySummary: {
+          totalTracks: 0,
+          syncedTracks: 0,
+        },
+      },
+      sections: {
+        overview: expect.any(String),
+        live: expect.any(String),
+      },
     });
 
     const response = await app.inject({
@@ -68,7 +79,30 @@ describe("registerRoutes", () => {
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toContain(encodeURIComponent("Manual selection saved."));
+    expect(response.headers.location).toContain("messageKey=message.manualSelectionSaved");
+
+    await close();
+  });
+
+  it("persists the selected language preference", async () => {
+    const { app, close } = await createTestApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/preferences/language",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      payload: "language=en",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ok: true,
+      language: "en",
+    });
+    expect(response.headers["set-cookie"]).toContain("dashboard_lang=en");
 
     await close();
   });

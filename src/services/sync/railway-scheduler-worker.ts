@@ -44,6 +44,9 @@ export class RailwaySchedulerWorker {
   private readonly pollIntervalMs: number;
   private readonly scheduleMinute: number;
   private readonly now: () => number;
+  private schedulerRunning = false;
+  private lastTickAt: number | null = null;
+  private lastTickError: string | null = null;
 
   constructor(
     private readonly syncService: Pick<SyncService, "run" | "resumeDueRuns">,
@@ -57,6 +60,7 @@ export class RailwaySchedulerWorker {
   }
 
   async start() {
+    this.schedulerRunning = true;
     await this.tick("startup");
     this.timer = setInterval(() => {
       void this.tick("interval");
@@ -64,6 +68,7 @@ export class RailwaySchedulerWorker {
   }
 
   async stop() {
+    this.schedulerRunning = false;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -90,6 +95,7 @@ export class RailwaySchedulerWorker {
 
   private async runTick(trigger: "startup" | "interval" | "manual") {
     try {
+      this.lastTickError = null;
       const resumed = await this.syncService.resumeDueRuns(`worker:${trigger}`);
       if (resumed) {
         this.logger.info(
@@ -117,6 +123,7 @@ export class RailwaySchedulerWorker {
       const result = await this.syncService.run("schedule");
       this.logScheduledRun(result, slot, trigger);
     } catch (error) {
+      this.lastTickError = error instanceof Error ? error.message : String(error);
       if (error instanceof AppError && error.statusCode === 409) {
         this.logger.info(
           {
@@ -129,7 +136,17 @@ export class RailwaySchedulerWorker {
       }
 
       this.logger.error({ err: error, trigger }, "worker scheduler tick failed");
+    } finally {
+      this.lastTickAt = this.now();
     }
+  }
+
+  getHealthSnapshot() {
+    return {
+      schedulerRunning: this.schedulerRunning,
+      lastTickAt: this.lastTickAt,
+      lastTickError: this.lastTickError,
+    };
   }
 
   private logScheduledRun(result: SyncRunResult, slot: SchedulerSlotWindow, trigger: string) {
