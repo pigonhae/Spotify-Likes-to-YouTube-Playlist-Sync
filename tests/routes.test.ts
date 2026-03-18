@@ -1,9 +1,11 @@
 import basicAuth from "@fastify/basic-auth";
 import formbody from "@fastify/formbody";
+import { eq } from "drizzle-orm";
 import fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import type { AppContext } from "../src/app.js";
+import { syncRuns } from "../src/db/schema.js";
 import { registerRoutes } from "../src/routes/index.js";
 import { AccountManagementService } from "../src/services/account-management-service.js";
 import { QuotaService } from "../src/services/quota-service.js";
@@ -125,6 +127,71 @@ describe("registerRoutes", () => {
         header: expect.stringContaining("English"),
         overview: expect.stringContaining("Playlist And Sync"),
       },
+    });
+
+    await close();
+  });
+
+  it("serves recent sync runs through cursor pagination in newest-first order", async () => {
+    const { app, store, close } = await createTestApp();
+    const baseTime = Date.parse("2026-03-18T00:00:00.000Z");
+    const startedOffsets = [7, 6, 6, 5, 4, 3, 2];
+    const runIds: number[] = [];
+
+    for (const offset of startedOffsets) {
+      const runId = await store.createSyncRun("manual");
+      runIds.push(runId);
+      const startedAt = baseTime + offset * 60_000;
+      await store.db
+        .update(syncRuns)
+        .set({
+          status: "completed",
+          phase: "completed",
+          startedAt,
+          finishedAt: startedAt + 30_000,
+          lastHeartbeatAt: startedAt + 30_000,
+          updatedAt: startedAt + 30_000,
+        })
+        .where(eq(syncRuns.id, runId));
+    }
+
+    const firstPageResponse = await app.inject({
+      method: "GET",
+      url: "/api/sync-runs?limit=5",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+      },
+    });
+
+    expect(firstPageResponse.statusCode).toBe(200);
+    expect(firstPageResponse.json()).toMatchObject({
+      hasMore: true,
+      items: [
+        { id: runIds[0] },
+        { id: runIds[2] },
+        { id: runIds[1] },
+        { id: runIds[3] },
+        { id: runIds[4] },
+      ],
+      nextCursor: expect.any(String),
+    });
+
+    const secondPageResponse = await app.inject({
+      method: "GET",
+      url: `/api/sync-runs?limit=5&cursor=${encodeURIComponent(firstPageResponse.json().nextCursor)}`,
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+      },
+    });
+
+    expect(secondPageResponse.statusCode).toBe(200);
+    expect(secondPageResponse.json()).toMatchObject({
+      hasMore: false,
+      items: [
+        { id: runIds[5] },
+        { id: runIds[6] },
+      ],
+      nextCursor: null,
     });
 
     await close();

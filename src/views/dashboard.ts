@@ -1,11 +1,21 @@
 import { escapeHtml } from "../lib/strings.js";
-import { formatDateForLanguage, serializeMessageCatalog, t } from "../lib/i18n.js";
+import {
+  formatDateForLanguage,
+  formatRelativeTimeForLanguage,
+  serializeMessageCatalog,
+  t,
+} from "../lib/i18n.js";
 import type { Language, SyncStats } from "../types.js";
 
 type MessageLevel = "success" | "error";
 type DashboardLiveSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardLiveData"]>>;
-type DashboardSummary = DashboardLiveSummary;
+type DashboardSummary = Omit<DashboardLiveSummary, "recentRunsPage">;
 type DashboardRun = DashboardSummary["recentRuns"][number];
+type DashboardRecentRunsPage = {
+  items: DashboardRun[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
 type DashboardAttentionTrack = DashboardSummary["attentionTracks"][number];
 type DashboardAccount = {
   provider: string;
@@ -20,11 +30,18 @@ export function renderDashboard(input: {
   messageLevel?: MessageLevel | undefined;
   summary: DashboardSummary;
   accounts: DashboardAccount[];
+  recentRunsPage?: DashboardRecentRunsPage;
 }) {
+  const recentRunsPage = input.recentRunsPage ?? {
+    items: input.summary.recentRuns,
+    hasMore: false,
+    nextCursor: null,
+  };
   const sections = renderDashboardSections({
     language: input.language,
     summary: input.summary,
     accounts: input.accounts,
+    recentRunsPage,
   });
 
   return `<!doctype html>
@@ -42,11 +59,11 @@ export function renderDashboard(input: {
     ${input.message ? `<div id="flash-root"><div class="message ${input.messageLevel === "error" ? "error" : "success"}">${escapeHtml(input.message)}</div></div>` : `<div id="flash-root"></div>`}
     <div id="overview-root">${sections.overview}</div>
     <div id="live-root">${sections.live}</div>
-    <div id="recent-runs-root">${sections.recentRuns}</div>
     <div id="attention-root">${sections.attention}</div>
+    <div id="recent-runs-root">${sections.recentRuns}</div>
     <div id="danger-root">${sections.danger}</div>
   </main>
-  <script id="dashboard-live-data" type="application/json">${serializeForScriptTag({ language: input.language, summary: input.summary, accounts: input.accounts })}</script>
+  <script id="dashboard-live-data" type="application/json">${serializeForScriptTag({ language: input.language, summary: input.summary, accounts: input.accounts, recentRunsPage })}</script>
   <script id="dashboard-message-catalog" type="application/json">${serializeForScriptTag(serializeMessageCatalog())}</script>
   <script>${clientScript()}</script>
 </body>
@@ -57,7 +74,13 @@ export function renderDashboardSections(input: {
   language: Language;
   summary: DashboardSummary;
   accounts: DashboardAccount[];
+  recentRunsPage?: DashboardRecentRunsPage;
 }) {
+  const recentRunsPage = input.recentRunsPage ?? {
+    items: input.summary.recentRuns,
+    hasMore: false,
+    nextCursor: null,
+  };
   const spotifyAccount = input.accounts.find((account) => account.provider === "spotify");
   const youtubeAccount = input.accounts.find((account) => account.provider === "youtube");
   const isSpotifyConnected = input.summary.spotifyConnected === true;
@@ -70,8 +93,8 @@ export function renderDashboardSections(input: {
     header: renderHeader(input.language),
     overview: `<section class="grid">${renderConnectionPanel(input.language, "Spotify", isSpotifyConnected, spotifyAccount, "/auth/spotify/start", "/admin/connections/spotify/disconnect", "connection.disconnectSpotifyConfirm", "connection.connectSpotify", "connection.disconnectSpotify")}${renderConnectionPanel(input.language, "YouTube", isYouTubeConnected, youtubeAccount, "/auth/youtube/start", "/admin/connections/youtube/disconnect", "connection.disconnectYouTubeConfirm", "connection.connectYouTube", "connection.disconnectYouTube")}${renderSyncPanel(input.language, input.summary, canRunSync)}</section>`,
     live: `<section class="panel live" style="margin-top:16px;"><div id="live-sync-root">${renderLiveSection(input.language, input.summary)}</div></section>`,
-    recentRuns: `<section class="panel" style="margin-top:16px;"><h2 style="margin-top:0;">${escapeHtml(t(input.language, "runs.title"))}</h2><div class="runs">${renderRecentRuns(input.language, input.summary.recentRuns)}</div></section>`,
     attention: `<section class="panel" style="margin-top:16px;"><h2 style="margin-top:0;">${escapeHtml(t(input.language, "attention.title"))}</h2>${input.summary.attentionTracks.length === 0 ? `<p class="muted">${escapeHtml(t(input.language, "attention.empty"))}</p>` : `${reviewTracks.length > 0 ? `<section style="margin-bottom:18px;"><h3 class="muted" style="margin:0 0 12px;">${escapeHtml(t(input.language, "attention.reviewSection"))}</h3><div class="attention-list">${reviewTracks.map((track: DashboardAttentionTrack) => renderReviewTrackCard(input.language, track)).join("")}</div></section>` : ""}${otherAttentionTracks.length > 0 ? `<section><h3 class="muted" style="margin:0 0 12px;">${escapeHtml(t(input.language, "attention.retrySection"))}</h3><div class="attention-list">${otherAttentionTracks.map((track: DashboardAttentionTrack) => renderAttentionTrackCard(input.language, track)).join("")}</div></section>` : ""}`}</section>`,
+    recentRuns: renderRecentRunsSection(input.language, recentRunsPage),
     danger: renderDangerSection(input.language),
   };
 }
@@ -91,10 +114,12 @@ function baseStyles() {
     button{background:var(--accent);color:#fff;cursor:pointer} button.secondary{background:#fff;color:var(--ink)} button.secondary.active{border-color:var(--accent);color:var(--accent)} button.danger{background:var(--danger);border-color:var(--danger)} button.danger.secondary{background:#fff;color:var(--danger)} button:disabled{opacity:.55;cursor:not-allowed}
     .muted,.note{color:var(--muted)} .inline-note,.empty{padding:12px 14px;border-radius:12px;background:#faf7f1;border:1px solid var(--line)}
     .head,.split{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0}.meta,.summary-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));min-width:0}
-    .title,.subtitle,.text,.log,.current,.video-title,.video-channel,.video-meta{min-width:0;overflow-wrap:anywhere;word-break:break-word}.log{margin-top:10px;padding:12px;border-radius:12px;background:#faf7f1;border:1px solid var(--line);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto}
+    .title,.subtitle,.text,.log,.current,.video-title,.video-channel,.video-meta,.recent-run-time{min-width:0;overflow-wrap:anywhere;word-break:break-word}.log{margin-top:10px;padding:12px;border-radius:12px;background:#faf7f1;border:1px solid var(--line);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto}
     .video-card{display:grid;gap:12px;grid-template-columns:minmax(0,160px) minmax(0,1fr);padding:12px;border-radius:14px;border:1px solid var(--line);background:#faf7f1}.video-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:12px;border:1px solid var(--line)}
     .manual-row,.controls{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0}.progress{display:grid;gap:8px}.bar{width:100%;height:10px;border-radius:999px;background:#ede7da;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#0d7c66 0%,#27a77c 100%)}
     .scroll{max-height:520px;overflow:auto;padding-right:4px}.sticky{position:sticky;top:0;background:linear-gradient(180deg,var(--panel) 78%,rgba(255,253,248,0));padding-bottom:10px;z-index:1}.current-row{border-color:#9cc8ba;background:linear-gradient(180deg,#f6fff8 0%,rgba(255,255,255,.96) 100%)} .chips,.language-toggle{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+    .recent-runs-footer{display:grid;gap:10px;min-height:44px;margin-top:12px;align-content:start;min-width:0}.recent-runs-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-width:0}.recent-runs-error{margin:0}.spinner{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:0 0 auto}
+    @keyframes spin{to{transform:rotate(360deg)}}
     @media (max-width:860px){.live-board,.video-card,.head,.split,.manual-row,.controls{grid-template-columns:1fr}} @media (max-width:640px){main{padding-left:14px;padding-right:14px}}
   `;
 }
@@ -161,13 +186,35 @@ function renderEventRow(language: Language, event: any) {
   return `<article class="event-row"><div class="head"><div><div class="text"><strong>${escapeHtml(event.message)}</strong></div><div class="text muted">${escapeHtml(event.stage)}</div></div><span class="${statusClass(event.level === "error" ? "failed" : event.level === "warn" ? "waiting_for_youtube_quota" : "running")}">${escapeHtml(String(event.level).toUpperCase())}</span></div><div class="chips"><span class="tag">${escapeHtml(formatDate(language, event.createdAt))}</span>${event.spotifyTrackId ? `<span class="tag">${escapeHtml(event.spotifyTrackId)}</span>` : ""}</div>${event.payloadJson ? `<details><summary>${escapeHtml(t(language, "live.payload"))}</summary><div class="log">${formatStructuredLog(event.payloadJson)}</div></details>` : ""}</article>`;
 }
 
+function renderRecentRunsSection(language: Language, recentRunsPage: DashboardRecentRunsPage) {
+  return `<section class="panel" style="margin-top:16px;"><h2 style="margin-top:0;">${escapeHtml(t(language, "runs.title"))}</h2><div class="runs" id="recent-runs-items">${renderRecentRuns(language, recentRunsPage.items)}</div><div class="recent-runs-footer" id="recent-runs-footer">${renderRecentRunsFooter(language, { hasMore: recentRunsPage.hasMore, isLoading: false, error: "" })}</div></section>`;
+}
+
 function renderRecentRuns(language: Language, runs: DashboardRun[]) {
   return runs.length === 0 ? `<p class="muted">${escapeHtml(t(language, "runs.empty"))}</p>` : runs.map((run) => renderRunCard(language, run)).join("");
 }
 
+function renderRecentRunsFooter(language: Language, input: {
+  hasMore: boolean;
+  isLoading: boolean;
+  error: string;
+}) {
+  if (!input.hasMore && !input.error) {
+    return "";
+  }
+
+  const buttonLabel = input.isLoading
+    ? t(language, "runs.loadingMore")
+    : input.error
+      ? t(language, "runs.retry")
+      : t(language, "runs.loadMore");
+
+  return `<div class="recent-runs-actions">${input.error ? `<p class="inline-note recent-runs-error">${escapeHtml(input.error)}</p>` : ""}${input.hasMore || input.error ? `<button type="button" class="secondary" id="recent-runs-load-more" ${input.isLoading ? "disabled" : ""}>${input.isLoading ? `<span class="spinner" aria-hidden="true"></span> ` : ""}${escapeHtml(buttonLabel)}</button>` : ""}</div>`;
+}
+
 function renderRunCard(language: Language, run: DashboardRun) {
   const parsedStats = safeParseJson(run.statsJson);
-  return `<article class="run-card"><div class="head"><div><div class="chips"><span class="${statusClass(run.status)}">${escapeHtml(formatRunStatus(language, run.status))}</span><span class="tag">${escapeHtml(run.trigger)}</span></div></div><div><small class="muted">${escapeHtml(t(language, "runs.startedAt"))}</small><div class="text">${escapeHtml(formatDate(language, run.startedAt))}</div></div></div><div class="meta"><div><small class="muted">${escapeHtml(t(language, "runs.finishedAt"))}</small><div class="text">${escapeHtml(run.finishedAt ? formatDate(language, run.finishedAt) : t(language, "runs.stillActive"))}</div></div><div><small class="muted">${escapeHtml(t(language, "runs.stats"))}</small><div class="text">${escapeHtml(formatStatsDisplay(parsedStats))}</div></div><div><small class="muted">${escapeHtml(t(language, "runs.error"))}</small><div class="text">${escapeHtml(previewText(run.errorSummary))}</div></div></div><div>${run.statsJson ? `<details><summary>${escapeHtml(t(language, "live.viewStats"))}</summary><div class="log">${formatStructuredLog(parsedStats ?? run.statsJson ?? "-")}</div></details>` : ""}${run.errorSummary ? `<details><summary>${escapeHtml(t(language, "live.viewError"))}</summary><div class="log">${formatStructuredLog(run.errorSummary ?? "-")}</div></details>` : ""}</div></article>`;
+  return `<article class="run-card"><div class="head"><div><div class="chips"><span class="${statusClass(run.status)}">${escapeHtml(formatRunStatus(language, run.status))}</span><span class="tag">${escapeHtml(run.trigger)}</span></div></div><div><small class="muted">${escapeHtml(t(language, "runs.startedAt"))}</small><div class="text">${renderRelativeTime(language, run.startedAt)}</div></div></div><div class="meta"><div><small class="muted">${escapeHtml(t(language, "runs.finishedAt"))}</small><div class="text">${escapeHtml(run.finishedAt ? formatDate(language, run.finishedAt) : t(language, "runs.stillActive"))}</div></div><div><small class="muted">${escapeHtml(t(language, "runs.stats"))}</small><div class="text">${escapeHtml(formatStatsDisplay(parsedStats))}</div></div><div><small class="muted">${escapeHtml(t(language, "runs.error"))}</small><div class="text">${escapeHtml(previewText(run.errorSummary))}</div></div></div><div>${run.statsJson ? `<details><summary>${escapeHtml(t(language, "live.viewStats"))}</summary><div class="log">${formatStructuredLog(parsedStats ?? run.statsJson ?? "-")}</div></details>` : ""}${run.errorSummary ? `<details><summary>${escapeHtml(t(language, "live.viewError"))}</summary><div class="log">${formatStructuredLog(run.errorSummary ?? "-")}</div></details>` : ""}</div></article>`;
 }
 
 function renderReviewTrackCard(language: Language, track: DashboardAttentionTrack) {
@@ -204,23 +251,51 @@ function clientScript() {
     let liveData=stateNode?JSON.parse(stateNode.textContent||"{}"):{};
     const catalog=catalogNode?JSON.parse(catalogNode.textContent||"{}"):{};
     let currentLanguage=liveData.language||"ko";
+    const recentRunsState={
+      items:Array.isArray(liveData.recentRunsPage?.items)?liveData.recentRunsPage.items.slice():Array.isArray(liveData.summary?.recentRuns)?liveData.summary.recentRuns.slice():[],
+      isLoading:false,
+      hasMore:liveData.recentRunsPage?.hasMore===true,
+      nextCursor:typeof liveData.recentRunsPage?.nextCursor==="string"?liveData.recentRunsPage.nextCursor:null,
+      error:"",
+    };
     const trackState={page:1,pageSize:50,filter:"all",runId:liveData.summary?.activeRun?.id??null};
     let pollDelay=liveData.summary?.activeRun?5000:20000;
     let pollTimer=null;
     let staleMode=false;
+    let relativeRunsTimer=null;
     const esc=(value)=>String(value??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;").replace(/'/g,"&#39;");
     const tt=(key,params={})=>{const messages=catalog[currentLanguage]||catalog.ko||{}; const template=messages[key]||(catalog.en||{})[key]||key; return String(template).replace(/\\{(\\w+)\\}/g,(_,token)=>params[token]===undefined||params[token]===null?"":String(params[token]));};
     function replaceSection(id, html){ const node=document.getElementById(id); if(node && typeof html==="string"){ node.innerHTML=html; } }
     function setAlert(level,message){ const root=document.getElementById("live-alert-root"); if(!root) return; root.innerHTML=message?'<div class="message '+esc(level)+'">'+esc(message)+'</div>':""; }
+    function locale(){ return currentLanguage==="en"?"en-US":"ko-KR"; }
+    function formatDateValue(timestamp){ if(!timestamp) return "-"; return new Intl.DateTimeFormat(locale(),{dateStyle:"medium",timeStyle:"short"}).format(new Date(timestamp)); }
+    function formatRelativeTimeValue(timestamp, nowValue=Date.now()){ if(!timestamp) return "-"; const diffMs=Number(timestamp)-Number(nowValue); const absMs=Math.abs(diffMs); if(absMs<45000) return tt("time.justNow"); const formatter=new Intl.RelativeTimeFormat(locale(),{numeric:"always"}); const units=[{limit:45*60000,valueMs:60000,unit:"minute"},{limit:22*60*60000,valueMs:60*60000,unit:"hour"},{limit:26*24*60*60000,valueMs:24*60*60000,unit:"day"},{limit:320*24*60*60000,valueMs:30*24*60*60000,unit:"month"},{limit:Number.POSITIVE_INFINITY,valueMs:365*24*60*60000,unit:"year"}]; const match=units.find((candidate)=>absMs<candidate.limit)||units[units.length-1]; return formatter.format(Math.round(diffMs/match.valueMs),match.unit); }
+    function renderRelativeTimeNode(timestamp){ if(!timestamp) return esc(formatRelativeTimeValue(timestamp)); return '<time class="recent-run-time" datetime="'+esc(new Date(timestamp).toISOString())+'" data-relative-run-time="startedAt" data-timestamp="'+esc(String(timestamp))+'" title="'+esc(formatDateValue(timestamp))+'">'+esc(formatRelativeTimeValue(timestamp))+'</time>'; }
+    function safeParse(value){ if(!value) return null; if(typeof value!=="string") return value; try{ return JSON.parse(value); }catch{ return value; } }
+    function formatStructured(value){ if(value==null) return "-"; if(typeof value==="string") return esc(value); try{ return esc(JSON.stringify(value,null,2)); }catch{ return esc(String(value)); } }
+    function previewText(value,maxLength=140){ if(!value) return "-"; return value.length>maxLength?value.slice(0,maxLength)+"...":value; }
+    function formatStat(value){ return typeof value==="number"?String(value):"-"; }
+    function formatStatsDisplay(value){ if(!value||typeof value!=="object"||Array.isArray(value)){ return previewText(typeof value==="string"?value:"-"); } const stats=value; const items=['Inserted '+formatStat(stats.insertedTracks),'Skipped '+formatStat(stats.skippedAlreadyInPlaylist),'Review '+formatStat(stats.reviewRequiredCount),'Failed '+formatStat(stats.failedCount)]; if(stats.quotaAbort===true){ items.push('quota wait'); } return items.join(' | '); }
+    function runStatusClass(status){ return status==="failed"||status==="needs_reauth"?"status error":status==="waiting_for_youtube_quota"||status==="waiting_for_spotify_retry"||status==="review_required"||status==="no_match"||status==="quota_exhausted"?"status warn":"status"; }
+    function mergeRecentRuns(items){ const merged=[]; const seen=new Set(); for(const item of items){ const key=String(item?.id??""); if(!key||seen.has(key)) continue; seen.add(key); merged.push(item); } return merged; }
+    function recentRunCard(run){ const parsedStats=safeParse(run.statsJson); return '<article class="run-card"><div class="head"><div><div class="chips"><span class="'+runStatusClass(run.status)+'">'+esc(tt("status.run."+run.status))+'</span><span class="tag">'+esc(run.trigger)+'</span></div></div><div><small class="muted">'+esc(tt("runs.startedAt"))+'</small><div class="text">'+renderRelativeTimeNode(run.startedAt)+'</div></div></div><div class="meta"><div><small class="muted">'+esc(tt("runs.finishedAt"))+'</small><div class="text">'+esc(run.finishedAt?formatDateValue(run.finishedAt):tt("runs.stillActive"))+'</div></div><div><small class="muted">'+esc(tt("runs.stats"))+'</small><div class="text">'+esc(formatStatsDisplay(parsedStats))+'</div></div><div><small class="muted">'+esc(tt("runs.error"))+'</small><div class="text">'+esc(previewText(run.errorSummary))+'</div></div></div><div>'+(run.statsJson?'<details><summary>'+esc(tt("live.viewStats"))+'</summary><div class="log">'+formatStructured(parsedStats??run.statsJson??"-")+'</div></details>':'')+(run.errorSummary?'<details><summary>'+esc(tt("live.viewError"))+'</summary><div class="log">'+formatStructured(run.errorSummary??"-")+'</div></details>':'')+'</div></article>'; }
+    function recentRunsMarkup(){ return recentRunsState.items.length===0?'<p class="muted">'+esc(tt("runs.empty"))+'</p>':recentRunsState.items.map((run)=>recentRunCard(run)).join(""); }
+    function recentRunsFooterMarkup(){ if(!recentRunsState.hasMore&&!recentRunsState.error) return ""; const label=recentRunsState.isLoading?tt("runs.loadingMore"):recentRunsState.error?tt("runs.retry"):tt("runs.loadMore"); return '<div class="recent-runs-actions">'+(recentRunsState.error?'<p class="inline-note recent-runs-error">'+esc(recentRunsState.error)+'</p>':'')+((recentRunsState.hasMore||recentRunsState.error)?'<button type="button" class="secondary" id="recent-runs-load-more" '+(recentRunsState.isLoading?'disabled':'')+'>'+(recentRunsState.isLoading?'<span class="spinner" aria-hidden="true"></span> ':'')+esc(label)+'</button>':'')+'</div>'; }
+    function refreshRelativeRunTimes(){ document.querySelectorAll('[data-relative-run-time="startedAt"]').forEach((node)=>{ if(!(node instanceof HTMLElement)) return; const raw=node.getAttribute("data-timestamp"); const timestamp=raw?Number(raw):NaN; if(!Number.isFinite(timestamp)) return; node.textContent=formatRelativeTimeValue(timestamp); node.setAttribute("title", formatDateValue(timestamp)); }); }
+    function renderRecentRunsState(){ const itemsRoot=document.getElementById("recent-runs-items"); const footerRoot=document.getElementById("recent-runs-footer"); if(itemsRoot){ itemsRoot.innerHTML=recentRunsMarkup(); } if(footerRoot){ footerRoot.innerHTML=recentRunsFooterMarkup(); } refreshRelativeRunTimes(); }
+    function startRelativeRunsTimer(){ if(relativeRunsTimer){ clearInterval(relativeRunsTimer); } relativeRunsTimer=setInterval(refreshRelativeRunTimes,60000); }
+    async function loadMoreRecentRuns(){ if(recentRunsState.isLoading||(!recentRunsState.hasMore&&!recentRunsState.error)) return; recentRunsState.isLoading=true; recentRunsState.error=""; renderRecentRunsState(); try{ const url='/api/sync-runs?limit=5'+(recentRunsState.nextCursor?'&cursor='+encodeURIComponent(recentRunsState.nextCursor):''); const res=await fetch(url,{headers:{accept:'application/json'}}); if(!res.ok) throw new Error('recent runs load failed'); const payload=await res.json(); const items=Array.isArray(payload.items)?payload.items:[]; recentRunsState.items=mergeRecentRuns(recentRunsState.items.concat(items)); recentRunsState.hasMore=payload.hasMore===true; recentRunsState.nextCursor=typeof payload.nextCursor==='string'?payload.nextCursor:null; recentRunsState.error=""; }catch(_error){ recentRunsState.error=tt("runs.loadMoreError"); }finally{ recentRunsState.isLoading=false; renderRecentRunsState(); } }
     function trackRow(track,currentId){ const statusClass=["failed","needs_reauth"].includes(track.status)?"status error":["waiting_for_youtube_quota","waiting_for_spotify_retry","review_required","no_match","quota_exhausted"].includes(track.status)?"status warn":"status"; return '<article class="track-row '+(currentId&&track.spotifyTrackId===currentId?'current-row':'')+'"><div class="head"><div><div class="text"><strong>'+esc(track.trackName)+'</strong></div><div class="text muted">'+esc((track.artistNames||[]).join(", "))+'</div></div><span class="'+statusClass+'">'+esc(tt("status.track."+track.status))+'</span></div><div class="chips">'+(track.statusMessage?'<span class="tag">'+esc(track.statusMessage)+'</span>':'')+(track.matchedVideoTitle?'<span class="tag">YT: '+esc(track.matchedVideoTitle)+'</span>':'')+(track.playlistItemId?'<span class="tag">'+esc(tt("status.track.inserted"))+'</span>':'')+'</div>'+(track.lastError?'<details><summary>'+esc(tt("live.trackError"))+'</summary><div class="log">'+esc(track.lastError)+'</div></details>':'')+'</article>'; }
     async function loadTrackPage(){ if(!trackState.runId) return 0; const res=await fetch('/api/sync-runs/'+encodeURIComponent(String(trackState.runId))+'/tracks?page='+encodeURIComponent(String(trackState.page))+'&pageSize='+encodeURIComponent(String(trackState.pageSize))+'&filter='+encodeURIComponent(trackState.filter),{headers:{accept:"application/json"}}); if(!res.ok) return 0; const payload=await res.json(); const items=Array.isArray(payload.items)?payload.items:[]; const root=document.getElementById("track-list-items"); const note=document.getElementById("track-page-note"); if(root){ root.innerHTML=items.length===0?'<div class="empty">'+esc(tt("live.noMatchingTracks"))+'</div>':items.map((item)=>trackRow(item,payload.run?.currentSpotifyTrackId||null)).join(""); } if(note){ if(items.length===0){ note.textContent=tt("live.trackPageEmpty"); }else{ const start=(trackState.page-1)*trackState.pageSize+1; const end=(trackState.page-1)*trackState.pageSize+items.length; note.textContent=tt("live.trackPageRange",{start,end,total:payload.total}); } } const filter=document.getElementById("track-filter"); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; } return items.length; }
-    async function refreshLive(showRecovered,forcedLanguage){ const language=forcedLanguage||currentLanguage; const liveUrl='/api/dashboard/live?language='+encodeURIComponent(language); const res=await fetch(liveUrl,{headers:{accept:'application/json'}}); if(!res.ok) throw new Error('live refresh failed'); liveData=await res.json(); currentLanguage=liveData.language||language||currentLanguage; document.documentElement.lang=currentLanguage; replaceSection('header-root', liveData.sections?.header); replaceSection('overview-root', liveData.sections?.overview); replaceSection('live-root', liveData.sections?.live); replaceSection('recent-runs-root', liveData.sections?.recentRuns); replaceSection('attention-root', liveData.sections?.attention); replaceSection('danger-root', liveData.sections?.danger); trackState.runId=liveData.summary?.activeRun?.id??null; const filter=document.getElementById('track-filter'); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; } if(trackState.runId && (trackState.filter!=="all" || trackState.page!==1)){ await loadTrackPage(); } setAlert(showRecovered?'success':'', showRecovered?tt('live.restoredBanner'):''); staleMode=false; pollDelay=liveData.summary?.activeRun?5000:20000; }
-    function loop(){ if(pollTimer){ clearTimeout(pollTimer); } pollTimer=setTimeout(async()=>{ try{ await refreshLive(staleMode); }catch(_error){ staleMode=true; pollDelay=Math.min(60000,pollDelay*2); setAlert('error', tt('live.staleBanner')); }finally{ loop(); } }, pollDelay); }
-    async function switchLanguage(language){ if(language===currentLanguage) return; setAlert('success', tt('language.switching')); const res=await fetch('/api/preferences/language',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({language}).toString()}); if(!res.ok){ setAlert('error', tt('live.loadingError')); return; } const payload=await res.json(); currentLanguage=payload.language||language; document.documentElement.lang=currentLanguage; await refreshLive(false,currentLanguage); }
-    document.addEventListener('click',(event)=>{ const target=event.target; if(!(target instanceof HTMLElement)) return; const nextLanguage=target.getAttribute('data-language-switch'); if(nextLanguage){ event.preventDefault(); void switchLanguage(nextLanguage); return; } if(target.id==='track-refresh'){ event.preventDefault(); void loadTrackPage(); return; } if(target.id==='track-prev'){ event.preventDefault(); if(trackState.page<=1) return; trackState.page-=1; void loadTrackPage(); return; } if(target.id==='track-next'){ event.preventDefault(); trackState.page+=1; void loadTrackPage().then((count)=>{ if(count===0){ trackState.page=Math.max(1,trackState.page-1); } }); } });
+    async function refreshLive(showRecovered,forcedLanguage,refreshRecentRuns){ const language=forcedLanguage||currentLanguage; const liveUrl='/api/dashboard/live?language='+encodeURIComponent(language); const res=await fetch(liveUrl,{headers:{accept:'application/json'}}); if(!res.ok) throw new Error('live refresh failed'); liveData=await res.json(); currentLanguage=liveData.language||language||currentLanguage; document.documentElement.lang=currentLanguage; replaceSection('header-root', liveData.sections?.header); replaceSection('overview-root', liveData.sections?.overview); replaceSection('live-root', liveData.sections?.live); replaceSection('attention-root', liveData.sections?.attention); replaceSection('danger-root', liveData.sections?.danger); trackState.runId=liveData.summary?.activeRun?.id??null; const filter=document.getElementById('track-filter'); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; } if(trackState.runId && (trackState.filter!=="all" || trackState.page!==1)){ await loadTrackPage(); } if(refreshRecentRuns){ renderRecentRunsState(); } setAlert(showRecovered?'success':'', showRecovered?tt('live.restoredBanner'):''); staleMode=false; pollDelay=liveData.summary?.activeRun?5000:20000; }
+    function loop(){ if(pollTimer){ clearTimeout(pollTimer); } pollTimer=setTimeout(async()=>{ try{ await refreshLive(staleMode,undefined,false); }catch(_error){ staleMode=true; pollDelay=Math.min(60000,pollDelay*2); setAlert('error', tt('live.staleBanner')); }finally{ loop(); } }, pollDelay); }
+    async function switchLanguage(language){ if(language===currentLanguage) return; setAlert('success', tt('language.switching')); const res=await fetch('/api/preferences/language',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({language}).toString()}); if(!res.ok){ setAlert('error', tt('live.loadingError')); return; } const payload=await res.json(); currentLanguage=payload.language||language; document.documentElement.lang=currentLanguage; await refreshLive(false,currentLanguage,true); }
+    document.addEventListener('click',(event)=>{ const target=event.target; if(!(target instanceof HTMLElement)) return; const nextLanguage=target.getAttribute('data-language-switch'); if(nextLanguage){ event.preventDefault(); void switchLanguage(nextLanguage); return; } if(target.id==='recent-runs-load-more'){ event.preventDefault(); void loadMoreRecentRuns(); return; } if(target.id==='track-refresh'){ event.preventDefault(); void loadTrackPage(); return; } if(target.id==='track-prev'){ event.preventDefault(); if(trackState.page<=1) return; trackState.page-=1; void loadTrackPage(); return; } if(target.id==='track-next'){ event.preventDefault(); trackState.page+=1; void loadTrackPage().then((count)=>{ if(count===0){ trackState.page=Math.max(1,trackState.page-1); } }); } });
     document.addEventListener('change',(event)=>{ const target=event.target; if(target instanceof HTMLSelectElement && target.id==='track-filter'){ trackState.filter=target.value; trackState.page=1; void loadTrackPage(); } });
-    document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ void refreshLive(staleMode,currentLanguage); } });
+    document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ void refreshLive(staleMode,currentLanguage,false); } });
     document.addEventListener("submit",(event)=>{ const form=event.target; if(!(form instanceof HTMLFormElement)) return; const confirmMessage=form.dataset.confirmMessage; if(confirmMessage && !window.confirm(confirmMessage)){ event.preventDefault(); return; } const promptText=form.dataset.promptText; if(promptText){ const answer=window.prompt(promptText,""); if(answer===null){ event.preventDefault(); return; } const input=form.querySelector('input[name="confirmationText"]'); if(input instanceof HTMLInputElement) input.value=answer; } const submitter=event.submitter instanceof HTMLButtonElement?event.submitter:form.querySelector('button[type="submit"]'); form.querySelectorAll("button").forEach((button)=>{button.disabled=true}); if(submitter instanceof HTMLButtonElement){ submitter.textContent=submitter.dataset.loadingLabel||"Working..."; } });
+    renderRecentRunsState();
+    startRelativeRunsTimer();
     loop();
   `;
 }
@@ -258,6 +333,15 @@ function getThumbnailUrl(videoId: string) {
 
 function formatDate(language: Language, timestamp: number | null | undefined) {
   return formatDateForLanguage(language, timestamp);
+}
+
+function renderRelativeTime(language: Language, timestamp: number | null | undefined) {
+  if (!timestamp) {
+    return escapeHtml(formatRelativeTimeForLanguage(language, timestamp));
+  }
+
+  const iso = new Date(timestamp).toISOString();
+  return `<time class="recent-run-time" datetime="${escapeHtml(iso)}" data-relative-run-time="startedAt" data-timestamp="${escapeHtml(String(timestamp))}" title="${escapeHtml(formatDate(language, timestamp))}">${escapeHtml(formatRelativeTimeForLanguage(language, timestamp))}</time>`;
 }
 
 function serializeForScriptTag(value: unknown) {

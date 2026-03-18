@@ -70,6 +70,7 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
       language,
       summary: payload.summary,
       accounts: payload.accounts,
+      recentRunsPage: payload.recentRunsPage,
       message: flashPayload ? t(language, flashPayload.key, flashPayload.params) : undefined,
       messageLevel: flashPayload?.level ?? "success",
     });
@@ -88,8 +89,32 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         language,
         summary: payload.summary,
         accounts: payload.accounts,
+        recentRunsPage: payload.recentRunsPage,
       }),
     };
+  });
+
+  app.get("/api/sync-runs", { onRequest: basicAuthGuard }, async (request) => {
+    const query = request.query as {
+      limit?: string;
+      cursor?: string;
+    };
+    const limit = query.limit === undefined ? 5 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new ValidationError("Invalid sync run limit");
+    }
+
+    const cursor = query.cursor ? decodeRecentRunsCursor(query.cursor) : null;
+    if (query.cursor && !cursor) {
+      throw new ValidationError("Invalid sync run cursor");
+    }
+
+    const page = await context.store.listRecentSyncRunsPage({
+      limit,
+      cursor,
+    });
+
+    return serializeRecentRunsPage(page);
   });
 
   app.post("/api/preferences/language", { onRequest: basicAuthGuard }, async (request, reply) => {
@@ -319,21 +344,78 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
 }
 
 async function buildDashboardPayload(context: AppContext, language: "ko" | "en") {
-  const [summary, accounts] = await Promise.all([
+  const [rawSummary, accounts] = await Promise.all([
     context.store.getDashboardLiveData(),
     context.store.listOAuthAccounts(),
   ]);
+  const summary = rawSummary as typeof rawSummary & {
+    recentRunsPage?: {
+      items: unknown[];
+      hasMore: boolean;
+      nextCursor: { startedAt: number; id: number } | null;
+    };
+  };
+  const recentRunsPage = serializeRecentRunsPage(
+    summary.recentRunsPage ?? {
+      items: summary.recentRuns ?? [],
+      hasMore: false,
+      nextCursor: null,
+    },
+  );
+  const { recentRunsPage: _recentRunsPage, ...summaryWithoutRecentRunsPage } = summary;
 
   return {
     language,
-    summary,
+    summary: summaryWithoutRecentRunsPage,
     accounts: accounts.map((account: any) => ({
       provider: account.provider,
       externalDisplayName: account.externalDisplayName,
       invalidatedAt: account.invalidatedAt,
       lastRefreshError: account.lastRefreshError,
     })),
+    recentRunsPage,
   };
+}
+
+function serializeRecentRunsPage(page: {
+  items: unknown[];
+  hasMore: boolean;
+  nextCursor: { startedAt: number; id: number } | null;
+}) {
+  return {
+    items: page.items,
+    hasMore: page.hasMore,
+    nextCursor: encodeRecentRunsCursor(page.nextCursor),
+  };
+}
+
+function encodeRecentRunsCursor(cursor: { startedAt: number; id: number } | null) {
+  if (!cursor) {
+    return null;
+  }
+
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeRecentRunsCursor(value: string) {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
+      startedAt?: unknown;
+      id?: unknown;
+    };
+    const startedAt = typeof parsed.startedAt === "number" ? parsed.startedAt : Number(parsed.startedAt);
+    const id = typeof parsed.id === "number" ? parsed.id : Number(parsed.id);
+    if (!Number.isFinite(startedAt) || !Number.isInteger(id) || id <= 0) {
+      return null;
+    }
+
+    return {
+      startedAt,
+      id,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function getRequestLanguage(request: FastifyRequest) {

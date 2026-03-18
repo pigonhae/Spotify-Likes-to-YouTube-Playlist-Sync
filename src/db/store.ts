@@ -110,6 +110,11 @@ interface SyncRunTrackPatch {
   incrementAttemptCount?: boolean;
 }
 
+interface RecentSyncRunsCursor {
+  startedAt: number;
+  id: number;
+}
+
 export async function createAppStore(
   database: AppDatabase,
   userKey: string,
@@ -792,8 +797,44 @@ export class AppStore {
       .select()
       .from(syncRuns)
       .where(eq(syncRuns.userId, this.userId))
-      .orderBy(desc(syncRuns.startedAt))
+      .orderBy(desc(syncRuns.startedAt), desc(syncRuns.id))
       .limit(limit);
+  }
+
+  async listRecentSyncRunsPage(input: {
+    limit?: number;
+    cursor?: RecentSyncRunsCursor | null;
+  } = {}) {
+    const limit = Math.max(1, Math.min(50, input.limit ?? 5));
+    const cursor = input.cursor ?? null;
+    const cursorPredicate = cursor
+      ? or(
+          lt(syncRuns.startedAt, cursor.startedAt),
+          and(eq(syncRuns.startedAt, cursor.startedAt), lt(syncRuns.id, cursor.id)),
+        )
+      : undefined;
+    const rows = await this.db
+      .select()
+      .from(syncRuns)
+      .where(cursorPredicate ? and(eq(syncRuns.userId, this.userId), cursorPredicate) : eq(syncRuns.userId, this.userId))
+      .orderBy(desc(syncRuns.startedAt), desc(syncRuns.id))
+      .limit(limit + 1);
+
+    const items = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    const lastItem = items[items.length - 1] ?? null;
+
+    return {
+      items,
+      hasMore,
+      nextCursor:
+        hasMore && lastItem
+          ? {
+              startedAt: lastItem.startedAt,
+              id: lastItem.id,
+            }
+          : null,
+    };
   }
 
   async saveSyncRunStats(runId: number, stats: unknown) {
@@ -1735,7 +1776,8 @@ export class AppStore {
 
   async getDashboardSummary() {
     const oauth = await this.listOAuthAccounts();
-    const recentRuns = await this.listRecentSyncRuns(10);
+    const recentRunsPage = await this.listRecentSyncRunsPage({ limit: 5 });
+    const recentRuns = recentRunsPage.items;
     const currentSyncState = await this.getSyncState();
     const attentionTracks = (await this.listAttentionTracks(30)).map((track: any) => ({
       spotifyTrackId: track.spotifyTrackId,
@@ -1773,6 +1815,7 @@ export class AppStore {
       lastRunAt: recentRuns[0]?.finishedAt ?? recentRuns[0]?.startedAt ?? null,
       activeRun,
       recentRuns,
+      recentRunsPage,
       attentionTracks,
       librarySummary: await this.getLibrarySummary(),
       lastLiveError: currentSyncState?.lastError ?? activeRun?.lastErrorSummary ?? null,

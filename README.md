@@ -717,8 +717,8 @@ The dashboard is server-rendered and live-updated by polling.
 - Connection panels for Spotify and YouTube
 - Playlist and sync panel
 - Live sync run panel
-- Recent runs
 - Needs attention list
+- Recent runs
 - Danger zone
 
 ### Live update behavior
@@ -727,16 +727,32 @@ The dashboard is server-rendered and live-updated by polling.
 - Poll interval is `5s` while a run is active
 - Poll interval is `20s` while idle
 - On repeated fetch failure, the UI enters a stale mode and backs off up to `60s`
-- Track pagination/filtering uses `/api/sync-runs/:runId/tracks`
+- The live panel is refreshed by polling, but the recent-runs history list is kept static until a full page reload
+- Recent runs use button-based pagination through `GET /api/sync-runs?limit=5&cursor=<optional>`
+- Active-run track pagination/filtering uses `/api/sync-runs/:runId/tracks`
 - Language preference is stored in the `dashboard_lang` cookie
+
+### Recent runs pagination
+
+- The dashboard renders the first `5` recent runs on the server
+- Clicking `Load more` appends the next page instead of using infinite scroll
+- The API returns newest-first results with cursor pagination:
+
+```json
+{
+  "items": [],
+  "nextCursor": "base64url-cursor-or-null",
+  "hasMore": true
+}
+```
 
 ### 주요 영역
 
 - Spotify / YouTube 연결 패널
 - 재생목록 및 동기화 패널
 - 라이브 sync run 패널
-- 최근 실행 기록
 - 조치가 필요한 트랙 목록
+- 최근 실행 기록
 - Danger zone
 
 ### 실시간 갱신 동작
@@ -745,8 +761,24 @@ The dashboard is server-rendered and live-updated by polling.
 - 실행 중일 때는 `5초` 간격으로 갱신합니다.
 - 유휴 상태일 때는 `20초` 간격으로 갱신합니다.
 - 연속으로 갱신에 실패하면 stale mode에 들어가고 최대 `60초`까지 backoff합니다.
-- 트랙 페이지네이션/필터링은 `/api/sync-runs/:runId/tracks`를 사용합니다.
+- 라이브 패널은 polling으로 갱신되지만 최근 실행 기록 목록은 전체 새로고침 전까지 현재 상태를 유지합니다.
+- 최근 실행 기록은 `GET /api/sync-runs?limit=5&cursor=<optional>` 버튼 기반 페이지네이션을 사용합니다.
+- 활성 run의 트랙 페이지네이션/필터링은 `/api/sync-runs/:runId/tracks`를 사용합니다.
 - 언어 설정은 `dashboard_lang` 쿠키에 저장됩니다.
+
+### 최근 실행 기록 페이지네이션
+
+- 대시보드는 최근 실행 기록 `5개`를 서버에서 먼저 렌더링합니다.
+- `더보기` 버튼을 누르면 무한 스크롤 없이 다음 페이지를 기존 목록 뒤에 이어 붙입니다.
+- API는 최신순 cursor 페이지네이션으로 다음 형태를 반환합니다.
+
+```json
+{
+  "items": [],
+  "nextCursor": "base64url-cursor-or-null",
+  "hasMore": true
+}
+```
 
 ## Manual Sync Explanation
 

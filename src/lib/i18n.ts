@@ -99,6 +99,10 @@ const MESSAGES: Record<Language, Record<string, MessageValue>> = {
     "runs.stillActive": "아직 진행 중",
     "runs.stats": "통계",
     "runs.error": "오류",
+    "runs.loadMore": "더보기",
+    "runs.loadingMore": "불러오는 중...",
+    "runs.retry": "다시 시도",
+    "runs.loadMoreError": "최근 실행 내역을 더 불러오지 못했습니다.",
     "attention.title": "확인이 필요한 곡",
     "attention.empty": "현재 수동 확인이 필요한 곡이 없습니다.",
     "attention.reviewSection": "검토 필요",
@@ -178,6 +182,7 @@ const MESSAGES: Record<Language, Record<string, MessageValue>> = {
     "phase.paused": "일시 중지",
     "phase.completed": "완료됨",
     "phase.failed": "실패함",
+    "time.justNow": "방금 전",
   },
   en: {
     "app.title": "Spotify Likes Sync",
@@ -272,6 +277,10 @@ const MESSAGES: Record<Language, Record<string, MessageValue>> = {
     "runs.stillActive": "Still active",
     "runs.stats": "Stats",
     "runs.error": "Error",
+    "runs.loadMore": "Load more",
+    "runs.loadingMore": "Loading...",
+    "runs.retry": "Retry",
+    "runs.loadMoreError": "Could not load more recent runs.",
     "attention.title": "Tracks Needing Attention",
     "attention.empty": "There are no tracks that currently need manual attention.",
     "attention.reviewSection": "Review required",
@@ -351,6 +360,7 @@ const MESSAGES: Record<Language, Record<string, MessageValue>> = {
     "phase.paused": "Paused",
     "phase.completed": "Completed",
     "phase.failed": "Failed",
+    "time.justNow": "just now",
   },
 };
 
@@ -392,6 +402,37 @@ export function formatDateForLanguage(
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+export function formatRelativeTimeForLanguage(
+  language: Language,
+  timestamp: number | null | undefined,
+  now = Date.now(),
+) {
+  if (!timestamp) {
+    return "-";
+  }
+
+  const diffMs = timestamp - now;
+  const absMs = Math.abs(diffMs);
+  if (absMs < 45_000) {
+    return t(language, "time.justNow");
+  }
+
+  const formatter = new Intl.RelativeTimeFormat(getLocaleForLanguage(language), {
+    numeric: "always",
+  });
+  const units = [
+    { limit: 45 * 60_000, valueMs: 60_000, unit: "minute" },
+    { limit: 22 * 60 * 60_000, valueMs: 60 * 60_000, unit: "hour" },
+    { limit: 26 * 24 * 60 * 60_000, valueMs: 24 * 60 * 60_000, unit: "day" },
+    { limit: 320 * 24 * 60 * 60_000, valueMs: 30 * 24 * 60 * 60_000, unit: "month" },
+    { limit: Number.POSITIVE_INFINITY, valueMs: 365 * 24 * 60 * 60_000, unit: "year" },
+  ] as const;
+
+  const fallback = units[units.length - 1]!;
+  const match = units.find((candidate) => absMs < candidate.limit) ?? fallback;
+  return formatter.format(Math.round(diffMs / match.valueMs), match.unit);
 }
 
 export function t(language: Language, key: string, params: TranslationParams = {}) {

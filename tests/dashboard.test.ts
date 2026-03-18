@@ -4,11 +4,7 @@ import { renderDashboard } from "../src/views/dashboard.js";
 
 describe("renderDashboard", () => {
   it("hides disconnect controls when nothing is connected", () => {
-    const html = renderDashboard({
-      language: "en",
-      summary: createSummary({}),
-      accounts: [],
-    });
+    const html = renderDashboardHtml();
 
     expect(html).not.toContain('action="/admin/connections/spotify/disconnect"');
     expect(html).not.toContain('action="/admin/connections/youtube/disconnect"');
@@ -17,8 +13,7 @@ describe("renderDashboard", () => {
   });
 
   it("shows the connected provider disconnect control", () => {
-    const html = renderDashboard({
-      language: "en",
+    const html = renderDashboardHtml({
       summary: createSummary({
         spotifyConnected: true,
       }),
@@ -38,8 +33,7 @@ describe("renderDashboard", () => {
   });
 
   it("renders recent runs as cards with log disclosures", () => {
-    const html = renderDashboard({
-      language: "en",
+    const html = renderDashboardHtml({
       summary: createSummary({
         recentRuns: [
           {
@@ -59,7 +53,6 @@ describe("renderDashboard", () => {
           },
         ],
       }),
-      accounts: [],
     });
 
     expect(html).toContain('class="runs"');
@@ -69,11 +62,11 @@ describe("renderDashboard", () => {
     expect(html).toContain("quota wait");
     expect(html).toContain("Skipped 14");
     expect(html).toContain("quotaExceeded");
+    expect(html).toContain('data-relative-run-time="startedAt"');
   });
 
   it("renders the live sync panel with active run progress", () => {
-    const html = renderDashboard({
-      language: "en",
+    const html = renderDashboardHtml({
       summary: createSummary({
         activeRun: {
           id: 11,
@@ -153,7 +146,6 @@ describe("renderDashboard", () => {
           },
         ],
       }),
-      accounts: [],
     });
 
     expect(html).toContain("Live Sync Run");
@@ -165,8 +157,7 @@ describe("renderDashboard", () => {
   });
 
   it("renders review cards with recommendation actions and manual entry controls", () => {
-    const html = renderDashboard({
-      language: "en",
+    const html = renderDashboardHtml({
       summary: createSummary({
         attentionTracks: [
           {
@@ -197,7 +188,6 @@ describe("renderDashboard", () => {
           },
         ],
       }),
-      accounts: [],
     });
 
     expect(html).toContain('class="attention-card review-card"');
@@ -209,11 +199,7 @@ describe("renderDashboard", () => {
   });
 
   it("embeds valid JSON state blocks for the client bootstrap script", () => {
-    const html = renderDashboard({
-      language: "en",
-      summary: createSummary({}),
-      accounts: [],
-    });
+    const html = renderDashboardHtml();
 
     const liveDataMatch = html.match(
       /<script id="dashboard-live-data" type="application\/json">([\s\S]*?)<\/script>/,
@@ -227,7 +213,51 @@ describe("renderDashboard", () => {
     expect(() => JSON.parse(liveDataMatch?.[1] ?? "")).not.toThrow();
     expect(() => JSON.parse(catalogMatch?.[1] ?? "")).not.toThrow();
   });
+
+  it("places recent runs above danger zone, limits the initial page to five items, and avoids polling replacement", () => {
+    const recentRuns = Array.from({ length: 5 }, (_, index) => createRecentRun(index + 1));
+    const html = renderDashboardHtml({
+      summary: createSummary({
+        recentRuns,
+      }),
+      recentRunsPage: {
+        items: recentRuns,
+        hasMore: true,
+        nextCursor: "cursor-1",
+      },
+    });
+    const recentRunsMarkup = html.match(/<div class="runs" id="recent-runs-items">([\s\S]*?)<\/div><div class="recent-runs-footer"/)?.[1] ?? "";
+
+    expect(html.indexOf("Tracks Needing Attention")).toBeLessThan(html.indexOf("Recent Runs"));
+    expect(html.indexOf("Recent Runs")).toBeLessThan(html.indexOf("Danger Zone"));
+    expect(recentRunsMarkup.match(/class="run-card"/g)).toHaveLength(5);
+    expect(html).toContain('id="recent-runs-load-more"');
+    expect(html).not.toContain("replaceSection('recent-runs-root'");
+  });
 });
+
+function renderDashboardHtml(input: {
+  language?: "en" | "ko";
+  summary?: any;
+  accounts?: any[];
+  recentRunsPage?: {
+    items: any[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
+} = {}) {
+  const summary = input.summary ?? createSummary({});
+  return renderDashboard({
+    language: input.language ?? "en",
+    summary,
+    accounts: input.accounts ?? [],
+    recentRunsPage: input.recentRunsPage ?? {
+      items: summary.recentRuns,
+      hasMore: false,
+      nextCursor: null,
+    },
+  });
+}
 
 function createSummary(partial: Record<string, unknown> = {}) {
   return {
@@ -259,5 +289,25 @@ function createBaseSummary() {
     recentRuns: [],
     attentionTracks: [],
     lastLiveError: null,
+  };
+}
+
+function createRecentRun(id: number) {
+  const startedAt = Date.parse(`2026-03-${String(id).padStart(2, "0")}T00:00:00.000Z`);
+  return {
+    id,
+    userId: "test-owner",
+    trigger: "manual",
+    status: "completed",
+    startedAt,
+    finishedAt: startedAt + 60_000,
+    statsJson: {
+      insertedTracks: id,
+      skippedAlreadyInPlaylist: 0,
+      reviewRequiredCount: 0,
+      failedCount: 0,
+      quotaAbort: false,
+    },
+    errorSummary: null,
   };
 }
