@@ -67,9 +67,8 @@ The list below reflects features confirmed in the current source code and tests.
 
 ## Demo / Screenshots
 
-Add dashboard screenshots or a short demo GIF here.
+<img width="1849" height="951" alt="image" src="https://github.com/user-attachments/assets/31a07bce-ea88-4063-b724-9fdb38ff8fb7" />
 
-여기에 대시보드 스크린샷 또는 짧은 데모 GIF를 추가하면 좋습니다.
 
 ## Tech Stack
 
