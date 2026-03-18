@@ -198,6 +198,83 @@ describe("renderDashboard", () => {
     expect(html).toContain("Enter manual match");
   });
 
+  it("renders the comparison panel with tabs, refresh controls, and long diagnostics safely", () => {
+    const html = renderDashboardHtml({
+      comparison: createComparison({
+        meta: {
+          playlistId: "playlist-managed-123",
+          spotifyBasis: "active_source_tracks",
+          youtubeBasis: "stored_playlist_snapshot",
+          lastPlaylistSnapshotAt: Date.parse("2026-03-17T03:00:00.000Z"),
+          canRefresh: true,
+          refreshBlockedReason: null,
+          activeRunId: null,
+          activeRunStatus: null,
+        },
+        summary: {
+          spotifyTotal: 135,
+          youtubeTotal: 150,
+          inBoth: 130,
+          spotifyOnly: 5,
+          youtubeOnly: 20,
+          countDelta: 15,
+          reflectedCount: 135,
+          spotifyOnlyReasons: [
+            { reasonCode: "review_required", count: 3 },
+            { reasonCode: "mapped_not_in_playlist", count: 2 },
+          ],
+          youtubeOnlyReasons: [{ reasonCode: "unmanaged_or_added_outside_app", count: 20 }],
+        },
+        bucketPage: {
+          bucket: "spotify_only",
+          page: 1,
+          pageSize: 25,
+          total: 1,
+          items: [
+            {
+              bucket: "spotify_only",
+              reasonCode: "previously_synced_missing_now",
+              status: "synced",
+              statusMessage: "Previously reflected",
+              spotifyTrackId: "spotify-track-" + "x".repeat(40),
+              spotifyTrackName: "A Very Long Spotify Track Title ".repeat(8).trim(),
+              spotifyArtistNames: ["An Artist With A Very Long Name ".repeat(4).trim()],
+              spotifyAlbumName: "An Album Name ".repeat(6).trim(),
+              spotifyAddedAt: Date.parse("2026-03-17T00:00:00.000Z"),
+              spotifyRemovedAt: null,
+              targetVideoId: "target-video-" + "y".repeat(32),
+              targetVideoTitle: "A Very Long Target Video Title ".repeat(6).trim(),
+              targetChannelTitle: "A Very Long Channel Name ".repeat(5).trim(),
+              reviewVideoId: null,
+              reviewVideoTitle: null,
+              reviewChannelTitle: null,
+              playlistVideoId: null,
+              playlistVideoTitle: null,
+              playlistChannelTitle: null,
+              playlistItemId: null,
+              playlistPosition: null,
+              matchSource: "manual",
+              manualResolutionType: "manual_input",
+              searchStatus: "matched_manual",
+              lastSyncedAt: Date.parse("2026-03-17T01:00:00.000Z"),
+              lastError: "A very long diagnostic message ".repeat(8).trim(),
+              detail: null,
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(html).toContain("Playlist Comparison");
+    expect(html).toContain('id="comparison-refresh"');
+    expect(html).toContain('data-comparison-bucket="spotify_only"');
+    expect(html).toContain('data-comparison-bucket="youtube_only"');
+    expect(html).toContain('data-comparison-bucket="in_both"');
+    expect(html).toContain("Previously reflected, now missing");
+    expect(html).toContain("Identifiers and diagnostics");
+    expect(html).toContain('id="comparison-next"');
+  });
+
   it("embeds valid JSON state blocks for the client bootstrap script", () => {
     const html = renderDashboardHtml();
 
@@ -239,6 +316,7 @@ describe("renderDashboard", () => {
 function renderDashboardHtml(input: {
   language?: "en" | "ko";
   summary?: any;
+  comparison?: any;
   accounts?: any[];
   recentRunsPage?: {
     items: any[];
@@ -250,6 +328,7 @@ function renderDashboardHtml(input: {
   return renderDashboard({
     language: input.language ?? "en",
     summary,
+    comparison: input.comparison ?? createComparison({}),
     accounts: input.accounts ?? [],
     recentRunsPage: input.recentRunsPage ?? {
       items: summary.recentRuns,
@@ -262,6 +341,13 @@ function renderDashboardHtml(input: {
 function createSummary(partial: Record<string, unknown> = {}) {
   return {
     ...createBaseSummary(),
+    ...partial,
+  } as any;
+}
+
+function createComparison(partial: Record<string, unknown> = {}) {
+  return {
+    ...createBaseComparison(),
     ...partial,
   } as any;
 }
@@ -289,6 +375,39 @@ function createBaseSummary() {
     recentRuns: [],
     attentionTracks: [],
     lastLiveError: null,
+  };
+}
+
+function createBaseComparison() {
+  return {
+    meta: {
+      playlistId: null,
+      spotifyBasis: "active_source_tracks",
+      youtubeBasis: "stored_playlist_snapshot",
+      lastPlaylistSnapshotAt: null,
+      canRefresh: false,
+      refreshBlockedReason: "missing_playlist_id",
+      activeRunId: null,
+      activeRunStatus: null,
+    },
+    summary: {
+      spotifyTotal: 0,
+      youtubeTotal: 0,
+      inBoth: 0,
+      spotifyOnly: 0,
+      youtubeOnly: 0,
+      countDelta: 0,
+      reflectedCount: 0,
+      spotifyOnlyReasons: [],
+      youtubeOnlyReasons: [],
+    },
+    bucketPage: {
+      bucket: "spotify_only",
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      items: [],
+    },
   };
 }
 

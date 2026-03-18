@@ -70,6 +70,48 @@ describe("registerRoutes", () => {
       },
     });
 
+    const comparisonResponse = await app.inject({
+      method: "GET",
+      url: "/api/playlist-comparison?bucket=youtube_only&page=2&pageSize=10&language=en",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+      },
+    });
+
+    expect(comparisonResponse.statusCode).toBe(200);
+    expect(comparisonResponse.json()).toMatchObject({
+      language: "en",
+      comparison: {
+        bucketPage: {
+          bucket: "youtube_only",
+          page: 2,
+          pageSize: 10,
+        },
+      },
+      section: expect.stringContaining("Playlist Comparison"),
+    });
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/api/playlist-comparison/refresh?bucket=spotify_only&page=1&pageSize=25&language=en",
+      headers: {
+        authorization: createBasicAuthHeader("admin", "password"),
+      },
+    });
+
+    expect(refreshResponse.statusCode).toBe(200);
+    expect(refreshResponse.json()).toMatchObject({
+      language: "en",
+      comparison: {
+        bucketPage: {
+          bucket: "spotify_only",
+          page: 1,
+          pageSize: 25,
+        },
+      },
+      section: expect.stringContaining("Playlist Comparison"),
+    });
+
     const response = await app.inject({
       method: "POST",
       url: "/admin/tracks/spotify-track-1/review/manual",
@@ -323,6 +365,12 @@ async function createTestApp() {
         },
       }),
     },
+    playlistComparisonService: {
+      getComparison: async (input: { bucket?: string; page?: number; pageSize?: number }) =>
+        createComparisonPayload(input),
+      refreshComparison: async (input: { bucket?: string; page?: number; pageSize?: number }) =>
+        createComparisonPayload(input),
+    },
     trackReviewService: {
       acceptRecommendation: async () => ({
         alreadySelected: false,
@@ -361,4 +409,37 @@ async function seedSpotifyAccount(store: Awaited<ReturnType<typeof createTestSto
 
 function createBasicAuthHeader(username: string, password: string) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+}
+
+function createComparisonPayload(input: { bucket?: string; page?: number; pageSize?: number }) {
+  return {
+    meta: {
+      playlistId: "playlist-managed-123",
+      spotifyBasis: "active_source_tracks",
+      youtubeBasis: "stored_playlist_snapshot",
+      lastPlaylistSnapshotAt: Date.parse("2026-03-18T00:00:00.000Z"),
+      canRefresh: true,
+      refreshBlockedReason: null,
+      activeRunId: null,
+      activeRunStatus: null,
+    },
+    summary: {
+      spotifyTotal: 10,
+      youtubeTotal: 12,
+      inBoth: 8,
+      spotifyOnly: 2,
+      youtubeOnly: 4,
+      countDelta: 2,
+      reflectedCount: 9,
+      spotifyOnlyReasons: [{ reasonCode: "review_required", count: 2 }],
+      youtubeOnlyReasons: [{ reasonCode: "unmanaged_or_added_outside_app", count: 4 }],
+    },
+    bucketPage: {
+      bucket: input.bucket ?? "spotify_only",
+      page: input.page ?? 1,
+      pageSize: input.pageSize ?? 25,
+      total: 1,
+      items: [],
+    },
+  };
 }

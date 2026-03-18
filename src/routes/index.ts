@@ -12,7 +12,7 @@ import {
   type FlashPayload,
 } from "../lib/i18n.js";
 import { LocalizedError } from "../lib/localized-error.js";
-import { renderDashboard, renderDashboardSections } from "../views/dashboard.js";
+import { renderComparisonSection, renderDashboard, renderDashboardSections } from "../views/dashboard.js";
 
 type FlashLevel = "success" | "error";
 type TrackFilter =
@@ -64,11 +64,15 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
     const language = getRequestLanguage(request);
     const query = request.query as Record<string, unknown>;
     const flashPayload = decodeFlashPayload(query);
-    const payload = await buildDashboardPayload(context, language);
+    const [payload, comparisonPayload] = await Promise.all([
+      buildDashboardPayload(context, language),
+      buildComparisonPayload(context, language, getComparisonQuery(query)),
+    ]);
 
     const html = renderDashboard({
       language,
       summary: payload.summary,
+      comparison: comparisonPayload.comparison,
       accounts: payload.accounts,
       recentRunsPage: payload.recentRunsPage,
       message: flashPayload ? t(language, flashPayload.key, flashPayload.params) : undefined,
@@ -91,6 +95,23 @@ export async function registerRoutes(app: FastifyInstance, context: AppContext) 
         accounts: payload.accounts,
         recentRunsPage: payload.recentRunsPage,
       }),
+    };
+  });
+
+  app.get("/api/playlist-comparison", { onRequest: basicAuthGuard }, async (request) => {
+    const language = getRequestLanguage(request);
+    const query = request.query as Record<string, unknown>;
+    return buildComparisonPayload(context, language, getComparisonQuery(query));
+  });
+
+  app.post("/api/playlist-comparison/refresh", { onRequest: basicAuthGuard }, async (request) => {
+    const language = getRequestLanguage(request);
+    const query = request.query as Record<string, unknown>;
+    const comparison = await context.playlistComparisonService.refreshComparison(getComparisonQuery(query));
+    return {
+      language,
+      comparison,
+      section: renderComparisonSection(language, comparison),
     };
   });
 
@@ -389,6 +410,23 @@ function serializeRecentRunsPage(page: {
   };
 }
 
+async function buildComparisonPayload(
+  context: AppContext,
+  language: "ko" | "en",
+  query: {
+    bucket?: string;
+    page?: number;
+    pageSize?: number;
+  },
+) {
+  const comparison = await context.playlistComparisonService.getComparison(query);
+  return {
+    language,
+    comparison,
+    section: renderComparisonSection(language, comparison),
+  };
+}
+
 function encodeRecentRunsCursor(cursor: { startedAt: number; id: number } | null) {
   if (!cursor) {
     return null;
@@ -428,6 +466,17 @@ function getRequestLanguage(request: FastifyRequest) {
 
   const cookies = parseCookies(request.headers.cookie);
   return normalizeLanguage(cookies.dashboard_lang ?? getDefaultLanguage());
+}
+
+function getComparisonQuery(query: Record<string, unknown>) {
+  const bucket = typeof query.bucket === "string" ? query.bucket : undefined;
+  const page = query.page === undefined ? undefined : Number(query.page);
+  const pageSize = query.pageSize === undefined ? undefined : Number(query.pageSize);
+  return {
+    ...(bucket !== undefined ? { bucket } : {}),
+    ...(page !== undefined ? { page } : {}),
+    ...(pageSize !== undefined ? { pageSize } : {}),
+  };
 }
 
 function formatSyncFlashMessage(result: { status: string; disposition?: string }): FlashPayload {

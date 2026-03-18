@@ -10,6 +10,7 @@ import type { Language, SyncStats } from "../types.js";
 type MessageLevel = "success" | "error";
 type DashboardLiveSummary = Awaited<ReturnType<import("../db/store.js").AppStore["getDashboardLiveData"]>>;
 type DashboardSummary = Omit<DashboardLiveSummary, "recentRunsPage">;
+type DashboardComparison = Awaited<ReturnType<import("../services/playlist-comparison-service.js").PlaylistComparisonService["getComparison"]>>;
 type DashboardRun = DashboardSummary["recentRuns"][number];
 type DashboardRecentRunsPage = {
   items: DashboardRun[];
@@ -29,6 +30,7 @@ export function renderDashboard(input: {
   message?: string | undefined;
   messageLevel?: MessageLevel | undefined;
   summary: DashboardSummary;
+  comparison: DashboardComparison;
   accounts: DashboardAccount[];
   recentRunsPage?: DashboardRecentRunsPage;
 }) {
@@ -58,12 +60,14 @@ export function renderDashboard(input: {
     <div id="header-root">${sections.header}</div>
     ${input.message ? `<div id="flash-root"><div class="message ${input.messageLevel === "error" ? "error" : "success"}">${escapeHtml(input.message)}</div></div>` : `<div id="flash-root"></div>`}
     <div id="overview-root">${sections.overview}</div>
+    <div id="comparison-root">${renderComparisonSection(input.language, input.comparison)}</div>
     <div id="live-root">${sections.live}</div>
     <div id="attention-root">${sections.attention}</div>
     <div id="recent-runs-root">${sections.recentRuns}</div>
     <div id="danger-root">${sections.danger}</div>
   </main>
   <script id="dashboard-live-data" type="application/json">${serializeForScriptTag({ language: input.language, summary: input.summary, accounts: input.accounts, recentRunsPage })}</script>
+  <script id="dashboard-comparison-data" type="application/json">${serializeForScriptTag(input.comparison)}</script>
   <script id="dashboard-message-catalog" type="application/json">${serializeForScriptTag(serializeMessageCatalog())}</script>
   <script>${clientScript()}</script>
 </body>
@@ -103,24 +107,27 @@ function baseStyles() {
   return `
     :root{--bg:#f6f3eb;--panel:#fffdf8;--ink:#1f1d1a;--muted:#6f675d;--line:#ded7cb;--accent:#0d7c66;--warn:#b86d1f;--danger:#b93a32}
     *{box-sizing:border-box} html,body{max-width:100%;overflow-x:hidden} body{margin:0;font-family:"Segoe UI",sans-serif;background:radial-gradient(circle at top,#fff8e7,var(--bg) 50%);color:var(--ink)}
-    main{max-width:1120px;margin:0 auto;padding:32px 20px 56px;min-width:0} .grid,.runs,.attention-list,.stack,.live-board,.track-list,.event-list{display:grid;gap:12px;min-width:0}
+    main{max-width:1120px;margin:0 auto;padding:32px 20px 56px;min-width:0} .grid,.runs,.attention-list,.stack,.live-board,.track-list,.event-list,.comparison-summary,.comparison-facts{display:grid;gap:12px;min-width:0}
     .grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))} .live-board{grid-template-columns:minmax(0,1.02fr) minmax(0,1fr)}
-    .panel,.run-card,.attention-card,.track-row,.event-row{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;min-width:0;overflow:hidden;box-shadow:0 10px 35px rgba(60,45,20,.06)}
+    .comparison-summary{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.comparison-facts{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.comparison-tabs,.comparison-reasons{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+    .panel,.run-card,.attention-card,.track-row,.event-row,.comparison-row,.comparison-stat,.comparison-fact{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;min-width:0;overflow:hidden;box-shadow:0 10px 35px rgba(60,45,20,.06)}
     .attention-card.review-card{background:linear-gradient(180deg,#fffaf3 0%,rgba(255,255,255,.94) 100%)} .panel.live{background:linear-gradient(180deg,#fffef9 0%,#fffaf2 100%)} .danger-zone{border-color:#efc3bf;background:linear-gradient(180deg,#fff8f7 0%,rgba(255,255,255,.95) 100%)}
     .status,.tag,.pill{display:inline-flex;align-items:center;max-width:100%;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;overflow-wrap:anywhere;word-break:break-word}
+    .comparison-panel .comparison-stat,.comparison-panel .comparison-fact,.comparison-panel .comparison-row{box-shadow:none;background:linear-gradient(180deg,#fffefb 0%,rgba(255,255,255,.97) 100%)} .comparison-panel .comparison-stat{padding:14px}
     .status{background:#ebf6f2;color:var(--accent)} .status.warn{background:#fff4e8;color:var(--warn)} .status.error{background:#fff0ef;color:var(--danger)} .tag,.pill{background:#f4efe5;color:var(--ink)}
     .message{margin-bottom:16px;padding:12px 14px;border-radius:12px}.message.success{background:#eef8f4;border:1px solid #b7dccd}.message.error{background:#fff3f1;border:1px solid #f0b7b1}
     form,.actions,.manual-form{display:grid;gap:10px;min-width:0} button,input,select{border-radius:12px;border:1px solid var(--line);padding:10px 12px;font:inherit}
     button{background:var(--accent);color:#fff;cursor:pointer} button.secondary{background:#fff;color:var(--ink)} button.secondary.active{border-color:var(--accent);color:var(--accent)} button.danger{background:var(--danger);border-color:var(--danger)} button.danger.secondary{background:#fff;color:var(--danger)} button:disabled{opacity:.55;cursor:not-allowed}
     .muted,.note{color:var(--muted)} .inline-note,.empty{padding:12px 14px;border-radius:12px;background:#faf7f1;border:1px solid var(--line)}
     .head,.split{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0}.meta,.summary-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));min-width:0}
-    .title,.subtitle,.text,.log,.current,.video-title,.video-channel,.video-meta,.recent-run-time{min-width:0;overflow-wrap:anywhere;word-break:break-word}.log{margin-top:10px;padding:12px;border-radius:12px;background:#faf7f1;border:1px solid var(--line);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto}
+    .title,.subtitle,.text,.log,.current,.video-title,.video-channel,.video-meta,.recent-run-time,.comparison-value,.comparison-label,.comparison-note{min-width:0;overflow-wrap:anywhere;word-break:break-word}.log{margin-top:10px;padding:12px;border-radius:12px;background:#faf7f1;border:1px solid var(--line);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;max-height:260px;overflow:auto}
+    .comparison-value strong{font-size:20px}.comparison-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.comparison-note{margin:0}.comparison-row details{margin-top:10px}.comparison-scroll{max-height:560px}
     .video-card{display:grid;gap:12px;grid-template-columns:minmax(0,160px) minmax(0,1fr);padding:12px;border-radius:14px;border:1px solid var(--line);background:#faf7f1}.video-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:12px;border:1px solid var(--line)}
     .manual-row,.controls{display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;align-items:start;min-width:0}.progress{display:grid;gap:8px}.bar{width:100%;height:10px;border-radius:999px;background:#ede7da;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#0d7c66 0%,#27a77c 100%)}
     .scroll{max-height:520px;overflow:auto;padding-right:4px}.sticky{position:sticky;top:0;background:linear-gradient(180deg,var(--panel) 78%,rgba(255,253,248,0));padding-bottom:10px;z-index:1}.current-row{border-color:#9cc8ba;background:linear-gradient(180deg,#f6fff8 0%,rgba(255,255,255,.96) 100%)} .chips,.language-toggle{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
     .recent-runs-footer{display:grid;gap:10px;min-height:44px;margin-top:12px;align-content:start;min-width:0}.recent-runs-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-width:0}.recent-runs-error{margin:0}.spinner{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:0 0 auto}
     @keyframes spin{to{transform:rotate(360deg)}}
-    @media (max-width:860px){.live-board,.video-card,.head,.split,.manual-row,.controls{grid-template-columns:1fr}} @media (max-width:640px){main{padding-left:14px;padding-right:14px}}
+    @media (max-width:860px){.live-board,.video-card,.head,.split,.manual-row,.controls{grid-template-columns:1fr}} @media (max-width:640px){main{padding-left:14px;padding-right:14px}.comparison-tabs{display:grid;grid-template-columns:1fr}}
   `;
 }
 function renderHeader(language: Language) {
@@ -149,6 +156,93 @@ function renderSyncPanel(language: Language, summary: DashboardSummary, canRunSy
         : t(language, "sync.runScopeReady", { count: runSummary?.scopedTotalTracks ?? 0 });
 
   return `<article class="panel"><h2 style="margin-top:0;">${escapeHtml(t(language, "sync.panelTitle"))}</h2><p class="muted">${escapeHtml(t(language, "sync.managedPlaylistId"))}</p><p class="text"><strong>${playlistId ? escapeHtml(playlistId) : escapeHtml(t(language, "sync.playlistAutoCreated"))}</strong></p>${playlistId ? `<p><a href="https://www.youtube.com/playlist?list=${escapeHtml(playlistId)}" target="_blank" rel="noreferrer">${escapeHtml(t(language, "sync.openPlaylist"))}</a></p>` : ""}<div class="stack" style="margin-bottom:12px;"><div class="inline-note"><strong>${escapeHtml(t(language, "sync.librarySummary"))}</strong><br /><small>${escapeHtml(t(language, "sync.librarySummaryValue", { synced: librarySummary.syncedTracks, total: librarySummary.totalTracks }))}</small>${pendingAttention > 0 ? `<br /><small>${escapeHtml(t(language, "sync.pendingSummaryValue", { count: pendingAttention }))}</small>` : ""}</div><div class="inline-note"><strong>${escapeHtml(t(language, "sync.runScopeTitle"))}</strong><br /><small>${escapeHtml(runScopeText)}</small>${hasScopedProgress ? `<br /><small>${escapeHtml(t(language, "sync.runScopeProgress", { completed: runSummary.scopedCompletedTracks, total: runSummary.scopedTotalTracks }))}</small>` : ""}</div><p class="note" style="margin:0;">${escapeHtml(t(language, "sync.playlistSafety"))}</p></div><form method="post" action="/admin/sync"><button type="submit" ${canRunSync ? "" : "disabled"} data-loading-label="${escapeHtml(t(language, "sync.starting"))}">${escapeHtml(t(language, "sync.runNow"))}</button></form>${canRunSync ? `<p class="note">${escapeHtml(t(language, "sync.canRunNow"))}</p>` : `<div class="inline-note"><strong>${escapeHtml(t(language, "sync.waitingForSetupTitle"))}</strong><br /><small>${escapeHtml(t(language, "sync.waitingForSetupBody"))}</small></div>`}</article>`;
+}
+
+export function renderComparisonSection(language: Language, comparison: DashboardComparison) {
+  const meta = comparison.meta;
+  const summary = comparison.summary;
+  const bucketPage = comparison.bucketPage;
+  const pageStart = bucketPage.total === 0 ? 0 : (bucketPage.page - 1) * bucketPage.pageSize + 1;
+  const pageEnd = bucketPage.total === 0 ? 0 : Math.min(bucketPage.total, pageStart + bucketPage.items.length - 1);
+  const hasPlaylist = Boolean(meta.playlistId);
+  const blockedReason = meta.refreshBlockedReason ? t(language, `comparison.blocked.${meta.refreshBlockedReason}`) : "";
+
+  return `<section class="panel comparison-panel" style="margin-top:16px;"><div class="head"><div><div class="chips"><span class="tag">${escapeHtml(t(language, "comparison.spotifyBasisChip"))}</span><span class="tag">${escapeHtml(t(language, "comparison.youtubeBasisChip"))}</span>${meta.playlistId ? `<span class="tag">${escapeHtml(t(language, "comparison.playlistTag", { value: meta.playlistId }))}</span>` : ""}</div><h2 style="margin:10px 0 0;">${escapeHtml(t(language, "comparison.title"))}</h2><p class="note comparison-note" style="margin-top:6px;">${escapeHtml(t(language, "comparison.subtitle"))}</p></div><div class="actions"><button type="button" class="secondary" id="comparison-refresh" ${meta.canRefresh ? "" : "disabled"} data-loading-label="${escapeHtml(t(language, "comparison.refreshing"))}">${escapeHtml(t(language, "comparison.refresh"))}</button></div></div>${!hasPlaylist ? `<div class="empty">${escapeHtml(t(language, "comparison.noPlaylist"))}</div>` : `<div class="stack"><div class="summary-grid"><div><small class="muted">${escapeHtml(t(language, "comparison.spotifyBasis"))}</small><div class="text">${escapeHtml(t(language, "comparison.spotifyBasisValue"))}</div></div><div><small class="muted">${escapeHtml(t(language, "comparison.youtubeBasis"))}</small><div class="text">${escapeHtml(t(language, "comparison.youtubeBasisValue"))}</div></div><div><small class="muted">${escapeHtml(t(language, "comparison.lastSnapshot"))}</small><div class="text">${escapeHtml(formatDate(language, meta.lastPlaylistSnapshotAt))}</div></div><div><small class="muted">${escapeHtml(t(language, "comparison.refreshAvailability"))}</small><div class="text">${escapeHtml(meta.canRefresh ? t(language, "comparison.refreshReady") : blockedReason || t(language, "comparison.refreshUnavailable"))}</div></div></div><div class="inline-note"><strong>${escapeHtml(t(language, "comparison.reflectedHeadline", { reflected: summary.reflectedCount }))}</strong><br /><small>${escapeHtml(t(language, "comparison.reflectedBody", { reflected: summary.reflectedCount, spotify: summary.spotifyTotal, youtube: summary.youtubeTotal }))}</small></div><div class="comparison-summary"><article class="comparison-stat"><div class="comparison-label">${escapeHtml(t(language, "comparison.card.spotifyTotal"))}</div><div class="comparison-value"><strong>${escapeHtml(String(summary.spotifyTotal))}</strong></div></article><article class="comparison-stat"><div class="comparison-label">${escapeHtml(t(language, "comparison.card.youtubeTotal"))}</div><div class="comparison-value"><strong>${escapeHtml(String(summary.youtubeTotal))}</strong></div></article><article class="comparison-stat"><div class="comparison-label">${escapeHtml(t(language, "comparison.card.inBoth"))}</div><div class="comparison-value"><strong>${escapeHtml(String(summary.inBoth))}</strong></div><small class="muted">${escapeHtml(t(language, "comparison.card.inBothNote"))}</small></article><article class="comparison-stat"><div class="comparison-label">${escapeHtml(t(language, "comparison.card.spotifyOnly"))}</div><div class="comparison-value"><strong>${escapeHtml(String(summary.spotifyOnly))}</strong></div></article><article class="comparison-stat"><div class="comparison-label">${escapeHtml(t(language, "comparison.card.youtubeOnly"))}</div><div class="comparison-value"><strong>${escapeHtml(String(summary.youtubeOnly))}</strong></div><small class="muted">${escapeHtml(t(language, "comparison.delta", { value: summary.countDelta }))}</small></article></div><div class="stack"><div class="comparison-reasons">${renderComparisonReasonSummary(language, summary.spotifyOnlyReasons, "comparison.reasonSummary.spotifyOnly")}${renderComparisonReasonSummary(language, summary.youtubeOnlyReasons, "comparison.reasonSummary.youtubeOnly")}</div><div class="comparison-tabs" role="tablist" aria-label="${escapeHtml(t(language, "comparison.tabsLabel"))}"><button type="button" class="secondary ${bucketPage.bucket === "spotify_only" ? "active" : ""}" data-comparison-bucket="spotify_only">${escapeHtml(t(language, "comparison.tab.spotify_only", { count: summary.spotifyOnly }))}</button><button type="button" class="secondary ${bucketPage.bucket === "youtube_only" ? "active" : ""}" data-comparison-bucket="youtube_only">${escapeHtml(t(language, "comparison.tab.youtube_only", { count: summary.youtubeOnly }))}</button><button type="button" class="secondary ${bucketPage.bucket === "in_both" ? "active" : ""}" data-comparison-bucket="in_both">${escapeHtml(t(language, "comparison.tab.in_both", { count: summary.inBoth }))}</button></div><div class="inline-note"><strong>${escapeHtml(t(language, `comparison.bucketTitle.${bucketPage.bucket}`))}</strong><br /><small>${escapeHtml(bucketPage.total === 0 ? t(language, `comparison.bucketEmpty.${bucketPage.bucket}`) : t(language, "comparison.pageRange", { start: pageStart, end: pageEnd, total: bucketPage.total }))}</small></div><div class="scroll comparison-scroll"><div class="stack">${bucketPage.items.length === 0 ? `<div class="empty">${escapeHtml(t(language, "comparison.noItems"))}</div>` : bucketPage.items.map((item) => renderComparisonRow(language, item)).join("")}</div></div><div class="controls"><button type="button" class="secondary" id="comparison-prev" ${bucketPage.page <= 1 ? "disabled" : ""}>${escapeHtml(t(language, "comparison.previous"))}</button><button type="button" class="secondary" id="comparison-next" ${pageEnd >= bucketPage.total ? "disabled" : ""}>${escapeHtml(t(language, "comparison.next"))}</button></div></div></div>`}</section>`;
+}
+
+function renderComparisonReasonSummary(
+  language: Language,
+  reasons: DashboardComparison["summary"]["spotifyOnlyReasons"],
+  labelKey: string,
+) {
+  if (reasons.length === 0) {
+    return "";
+  }
+
+  return `<div class="inline-note"><strong>${escapeHtml(t(language, labelKey))}</strong><br /><small>${escapeHtml(reasons.map((reason) => `${formatComparisonReason(language, reason.reasonCode)} ${reason.count}`).join(" | "))}</small></div>`;
+}
+
+function renderComparisonRow(language: Language, item: DashboardComparison["bucketPage"]["items"][number]) {
+  const primaryTitle =
+    item.bucket === "youtube_only" && !item.spotifyTrackName
+      ? item.playlistVideoTitle ?? item.playlistVideoId ?? "-"
+      : item.spotifyTrackName ?? item.playlistVideoTitle ?? item.targetVideoTitle ?? "-";
+  const subtitle =
+    item.bucket === "youtube_only" && !item.spotifyTrackName
+      ? item.playlistChannelTitle ?? "-"
+      : `${item.spotifyArtistNames.join(", ")}${item.spotifyAlbumName ? ` / ${item.spotifyAlbumName}` : ""}`;
+  const statusMarkup = item.status
+    ? `<span class="${statusClass(item.status)}">${escapeHtml(formatComparisonStatus(language, item.status))}</span>`
+    : "";
+  const chips = [
+    `<span class="pill">${escapeHtml(formatComparisonReason(language, item.reasonCode))}</span>`,
+    item.matchSource ? `<span class="pill">${escapeHtml(t(language, item.matchSource === "manual" ? "comparison.match.manual" : "comparison.match.automatic"))}</span>` : "",
+    item.lastSyncedAt ? `<span class="pill">${escapeHtml(t(language, "comparison.lastSyncedAtShort", { value: formatDate(language, item.lastSyncedAt) }))}</span>` : "",
+  ].filter(Boolean).join("");
+  const diagnostics = renderComparisonDiagnostics(language, item);
+
+  return `<article class="comparison-row"><div class="head"><div><div class="text"><strong>${escapeHtml(primaryTitle)}</strong></div><div class="text muted">${escapeHtml(subtitle || "-")}</div></div>${statusMarkup}</div><div class="chips">${chips}</div><p class="note comparison-note" style="margin-top:10px;">${escapeHtml(formatComparisonExplanation(language, item))}</p><div class="comparison-facts" style="margin-top:12px;">${renderComparisonFact(language, "comparison.fact.spotify", item.spotifyTrackName ? `${item.spotifyTrackName}${item.spotifyArtistNames.length > 0 ? ` / ${item.spotifyArtistNames.join(", ")}` : ""}` : "-")}${renderComparisonFact(language, item.bucket === "spotify_only" ? "comparison.fact.target" : "comparison.fact.playlist", item.bucket === "spotify_only" ? formatComparisonTargetValue(item) : formatComparisonPlaylistValue(item))}${item.bucket === "youtube_only" && item.spotifyTrackName ? renderComparisonFact(language, "comparison.fact.removedSource", `${item.spotifyTrackName}${item.spotifyRemovedAt ? ` / ${formatDate(language, item.spotifyRemovedAt)}` : ""}`) : item.reviewVideoId ? renderComparisonFact(language, "comparison.fact.reviewCandidate", `${item.reviewVideoTitle ?? item.reviewVideoId}${item.reviewChannelTitle ? ` / ${item.reviewChannelTitle}` : ""}`) : ""}</div>${diagnostics}</article>`;
+}
+
+function renderComparisonFact(language: Language, labelKey: string, value: string) {
+  return `<div class="comparison-fact"><div class="comparison-label">${escapeHtml(t(language, labelKey))}</div><div class="comparison-value">${escapeHtml(value || "-")}</div></div>`;
+}
+
+function renderComparisonDiagnostics(
+  language: Language,
+  item: DashboardComparison["bucketPage"]["items"][number],
+) {
+  const detailParts = [
+    item.spotifyTrackId ? `Spotify: ${item.spotifyTrackId}` : "",
+    item.targetVideoId ? `Target video: ${item.targetVideoId}` : "",
+    item.playlistVideoId ? `Playlist video: ${item.playlistVideoId}` : "",
+    item.playlistItemId ? `Playlist item: ${item.playlistItemId}` : "",
+    item.lastError ? `Last error: ${item.lastError}` : "",
+  ].filter(Boolean);
+
+  if (detailParts.length === 0) {
+    return "";
+  }
+
+  return `<details><summary>${escapeHtml(t(language, "comparison.details"))}</summary><div class="log">${escapeHtml(detailParts.join("\n"))}</div></details>`;
+}
+
+function formatComparisonTargetValue(item: DashboardComparison["bucketPage"]["items"][number]) {
+  if (item.targetVideoTitle || item.targetVideoId) {
+    return `${item.targetVideoTitle ?? item.targetVideoId ?? "-"}${item.targetChannelTitle ? ` / ${item.targetChannelTitle}` : ""}`;
+  }
+
+  if (item.reviewVideoTitle || item.reviewVideoId) {
+    return `${item.reviewVideoTitle ?? item.reviewVideoId ?? "-"}${item.reviewChannelTitle ? ` / ${item.reviewChannelTitle}` : ""}`;
+  }
+
+  return "-";
+}
+
+function formatComparisonPlaylistValue(item: DashboardComparison["bucketPage"]["items"][number]) {
+  const title = item.playlistVideoTitle ?? item.playlistVideoId ?? "-";
+  const channel = item.playlistChannelTitle ? ` / ${item.playlistChannelTitle}` : "";
+  return `${title}${channel}`;
 }
 
 function renderLiveSection(language: Language, summary: DashboardSummary) {
@@ -247,8 +341,10 @@ function renderDangerSection(language: Language) {
 function clientScript() {
   return `
     const stateNode=document.getElementById("dashboard-live-data");
+    const comparisonNode=document.getElementById("dashboard-comparison-data");
     const catalogNode=document.getElementById("dashboard-message-catalog");
     let liveData=stateNode?JSON.parse(stateNode.textContent||"{}"):{};
+    let comparisonData=comparisonNode?JSON.parse(comparisonNode.textContent||"{}"):{};
     const catalog=catalogNode?JSON.parse(catalogNode.textContent||"{}"):{};
     let currentLanguage=liveData.language||"ko";
     const recentRunsState={
@@ -259,6 +355,13 @@ function clientScript() {
       error:"",
     };
     const trackState={page:1,pageSize:50,filter:"all",runId:liveData.summary?.activeRun?.id??null};
+    const comparisonState={
+      bucket:comparisonData.bucketPage?.bucket||"spotify_only",
+      page:Number(comparisonData.bucketPage?.page||1),
+      pageSize:Number(comparisonData.bucketPage?.pageSize||25),
+      isLoading:false,
+      isRefreshing:false,
+    };
     let pollDelay=liveData.summary?.activeRun?5000:20000;
     let pollTimer=null;
     let staleMode=false;
@@ -274,6 +377,7 @@ function clientScript() {
     function safeParse(value){ if(!value) return null; if(typeof value!=="string") return value; try{ return JSON.parse(value); }catch{ return value; } }
     function formatStructured(value){ if(value==null) return "-"; if(typeof value==="string") return esc(value); try{ return esc(JSON.stringify(value,null,2)); }catch{ return esc(String(value)); } }
     function previewText(value,maxLength=140){ if(!value) return "-"; return value.length>maxLength?value.slice(0,maxLength)+"...":value; }
+    function apiErrorText(error,fallback){ if(!error) return fallback; if(typeof error==="string") return error; if(typeof error.error==="string") return error.error; return fallback; }
     function formatStat(value){ return typeof value==="number"?String(value):"-"; }
     function formatStatsDisplay(value){ if(!value||typeof value!=="object"||Array.isArray(value)){ return previewText(typeof value==="string"?value:"-"); } const stats=value; const items=['Inserted '+formatStat(stats.insertedTracks),'Skipped '+formatStat(stats.skippedAlreadyInPlaylist),'Review '+formatStat(stats.reviewRequiredCount),'Failed '+formatStat(stats.failedCount)]; if(stats.quotaAbort===true){ items.push('quota wait'); } return items.join(' | '); }
     function runStatusClass(status){ return status==="failed"||status==="needs_reauth"?"status error":status==="waiting_for_youtube_quota"||status==="waiting_for_spotify_retry"||status==="review_required"||status==="no_match"||status==="quota_exhausted"?"status warn":"status"; }
@@ -285,12 +389,15 @@ function clientScript() {
     function renderRecentRunsState(){ const itemsRoot=document.getElementById("recent-runs-items"); const footerRoot=document.getElementById("recent-runs-footer"); if(itemsRoot){ itemsRoot.innerHTML=recentRunsMarkup(); } if(footerRoot){ footerRoot.innerHTML=recentRunsFooterMarkup(); } refreshRelativeRunTimes(); }
     function startRelativeRunsTimer(){ if(relativeRunsTimer){ clearInterval(relativeRunsTimer); } relativeRunsTimer=setInterval(refreshRelativeRunTimes,60000); }
     async function loadMoreRecentRuns(){ if(recentRunsState.isLoading||(!recentRunsState.hasMore&&!recentRunsState.error)) return; recentRunsState.isLoading=true; recentRunsState.error=""; renderRecentRunsState(); try{ const url='/api/sync-runs?limit=5'+(recentRunsState.nextCursor?'&cursor='+encodeURIComponent(recentRunsState.nextCursor):''); const res=await fetch(url,{headers:{accept:'application/json'}}); if(!res.ok) throw new Error('recent runs load failed'); const payload=await res.json(); const items=Array.isArray(payload.items)?payload.items:[]; recentRunsState.items=mergeRecentRuns(recentRunsState.items.concat(items)); recentRunsState.hasMore=payload.hasMore===true; recentRunsState.nextCursor=typeof payload.nextCursor==='string'?payload.nextCursor:null; recentRunsState.error=""; }catch(_error){ recentRunsState.error=tt("runs.loadMoreError"); }finally{ recentRunsState.isLoading=false; renderRecentRunsState(); } }
+    function applyComparisonPayload(payload){ if(!payload||typeof payload!=="object") return; comparisonData=payload.comparison||payload; comparisonState.bucket=comparisonData.bucketPage?.bucket||comparisonState.bucket; comparisonState.page=Number(comparisonData.bucketPage?.page||comparisonState.page||1); comparisonState.pageSize=Number(comparisonData.bucketPage?.pageSize||comparisonState.pageSize||25); if(typeof payload.section==="string"){ replaceSection('comparison-root', payload.section); } }
+    async function loadComparison(){ if(comparisonState.isLoading||comparisonState.isRefreshing) return; comparisonState.isLoading=true; try{ const url='/api/playlist-comparison?language='+encodeURIComponent(currentLanguage)+'&bucket='+encodeURIComponent(comparisonState.bucket)+'&page='+encodeURIComponent(String(comparisonState.page))+'&pageSize='+encodeURIComponent(String(comparisonState.pageSize)); const res=await fetch(url,{headers:{accept:'application/json'}}); const payload=await res.json().catch(()=>({})); if(!res.ok) throw new Error(apiErrorText(payload, tt('comparison.loadError'))); applyComparisonPayload(payload); }catch(error){ setAlert('error', error instanceof Error?error.message:tt('comparison.loadError')); }finally{ comparisonState.isLoading=false; } }
+    async function refreshComparison(){ if(comparisonState.isRefreshing||comparisonState.isLoading) return; comparisonState.isRefreshing=true; try{ const url='/api/playlist-comparison/refresh?language='+encodeURIComponent(currentLanguage)+'&bucket='+encodeURIComponent(comparisonState.bucket)+'&page='+encodeURIComponent(String(comparisonState.page))+'&pageSize='+encodeURIComponent(String(comparisonState.pageSize)); const res=await fetch(url,{method:'POST',headers:{accept:'application/json'}}); const payload=await res.json().catch(()=>({})); if(!res.ok) throw new Error(apiErrorText(payload, tt('comparison.refreshError'))); applyComparisonPayload(payload); setAlert('success', tt('comparison.refreshSuccess')); }catch(error){ setAlert('error', error instanceof Error?error.message:tt('comparison.refreshError')); }finally{ comparisonState.isRefreshing=false; } }
     function trackRow(track,currentId){ const statusClass=["failed","needs_reauth"].includes(track.status)?"status error":["waiting_for_youtube_quota","waiting_for_spotify_retry","review_required","no_match","quota_exhausted"].includes(track.status)?"status warn":"status"; return '<article class="track-row '+(currentId&&track.spotifyTrackId===currentId?'current-row':'')+'"><div class="head"><div><div class="text"><strong>'+esc(track.trackName)+'</strong></div><div class="text muted">'+esc((track.artistNames||[]).join(", "))+'</div></div><span class="'+statusClass+'">'+esc(tt("status.track."+track.status))+'</span></div><div class="chips">'+(track.statusMessage?'<span class="tag">'+esc(track.statusMessage)+'</span>':'')+(track.matchedVideoTitle?'<span class="tag">YT: '+esc(track.matchedVideoTitle)+'</span>':'')+(track.playlistItemId?'<span class="tag">'+esc(tt("status.track.inserted"))+'</span>':'')+'</div>'+(track.lastError?'<details><summary>'+esc(tt("live.trackError"))+'</summary><div class="log">'+esc(track.lastError)+'</div></details>':'')+'</article>'; }
     async function loadTrackPage(){ if(!trackState.runId) return 0; const res=await fetch('/api/sync-runs/'+encodeURIComponent(String(trackState.runId))+'/tracks?page='+encodeURIComponent(String(trackState.page))+'&pageSize='+encodeURIComponent(String(trackState.pageSize))+'&filter='+encodeURIComponent(trackState.filter),{headers:{accept:"application/json"}}); if(!res.ok) return 0; const payload=await res.json(); const items=Array.isArray(payload.items)?payload.items:[]; const root=document.getElementById("track-list-items"); const note=document.getElementById("track-page-note"); if(root){ root.innerHTML=items.length===0?'<div class="empty">'+esc(tt("live.noMatchingTracks"))+'</div>':items.map((item)=>trackRow(item,payload.run?.currentSpotifyTrackId||null)).join(""); } if(note){ if(items.length===0){ note.textContent=tt("live.trackPageEmpty"); }else{ const start=(trackState.page-1)*trackState.pageSize+1; const end=(trackState.page-1)*trackState.pageSize+items.length; note.textContent=tt("live.trackPageRange",{start,end,total:payload.total}); } } const filter=document.getElementById("track-filter"); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; } return items.length; }
     async function refreshLive(showRecovered,forcedLanguage,refreshRecentRuns){ const language=forcedLanguage||currentLanguage; const liveUrl='/api/dashboard/live?language='+encodeURIComponent(language); const res=await fetch(liveUrl,{headers:{accept:'application/json'}}); if(!res.ok) throw new Error('live refresh failed'); liveData=await res.json(); currentLanguage=liveData.language||language||currentLanguage; document.documentElement.lang=currentLanguage; replaceSection('header-root', liveData.sections?.header); replaceSection('overview-root', liveData.sections?.overview); replaceSection('live-root', liveData.sections?.live); replaceSection('attention-root', liveData.sections?.attention); replaceSection('danger-root', liveData.sections?.danger); trackState.runId=liveData.summary?.activeRun?.id??null; const filter=document.getElementById('track-filter'); if(filter instanceof HTMLSelectElement){ filter.value=trackState.filter; } if(trackState.runId && (trackState.filter!=="all" || trackState.page!==1)){ await loadTrackPage(); } if(refreshRecentRuns){ renderRecentRunsState(); } setAlert(showRecovered?'success':'', showRecovered?tt('live.restoredBanner'):''); staleMode=false; pollDelay=liveData.summary?.activeRun?5000:20000; }
     function loop(){ if(pollTimer){ clearTimeout(pollTimer); } pollTimer=setTimeout(async()=>{ try{ await refreshLive(staleMode,undefined,false); }catch(_error){ staleMode=true; pollDelay=Math.min(60000,pollDelay*2); setAlert('error', tt('live.staleBanner')); }finally{ loop(); } }, pollDelay); }
-    async function switchLanguage(language){ if(language===currentLanguage) return; setAlert('success', tt('language.switching')); const res=await fetch('/api/preferences/language',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({language}).toString()}); if(!res.ok){ setAlert('error', tt('live.loadingError')); return; } const payload=await res.json(); currentLanguage=payload.language||language; document.documentElement.lang=currentLanguage; await refreshLive(false,currentLanguage,true); }
-    document.addEventListener('click',(event)=>{ const target=event.target; if(!(target instanceof HTMLElement)) return; const nextLanguage=target.getAttribute('data-language-switch'); if(nextLanguage){ event.preventDefault(); void switchLanguage(nextLanguage); return; } if(target.id==='recent-runs-load-more'){ event.preventDefault(); void loadMoreRecentRuns(); return; } if(target.id==='track-refresh'){ event.preventDefault(); void loadTrackPage(); return; } if(target.id==='track-prev'){ event.preventDefault(); if(trackState.page<=1) return; trackState.page-=1; void loadTrackPage(); return; } if(target.id==='track-next'){ event.preventDefault(); trackState.page+=1; void loadTrackPage().then((count)=>{ if(count===0){ trackState.page=Math.max(1,trackState.page-1); } }); } });
+    async function switchLanguage(language){ if(language===currentLanguage) return; setAlert('success', tt('language.switching')); const res=await fetch('/api/preferences/language',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams({language}).toString()}); if(!res.ok){ setAlert('error', tt('live.loadingError')); return; } const payload=await res.json(); currentLanguage=payload.language||language; document.documentElement.lang=currentLanguage; await refreshLive(false,currentLanguage,true); await loadComparison(); }
+    document.addEventListener('click',(event)=>{ const target=event.target; if(!(target instanceof HTMLElement)) return; const nextLanguage=target.getAttribute('data-language-switch'); if(nextLanguage){ event.preventDefault(); void switchLanguage(nextLanguage); return; } const comparisonBucket=target.getAttribute('data-comparison-bucket'); if(comparisonBucket){ event.preventDefault(); comparisonState.bucket=comparisonBucket; comparisonState.page=1; void loadComparison(); return; } if(target.id==='comparison-refresh'){ event.preventDefault(); void refreshComparison(); return; } if(target.id==='comparison-prev'){ event.preventDefault(); if(comparisonState.page<=1) return; comparisonState.page-=1; void loadComparison(); return; } if(target.id==='comparison-next'){ event.preventDefault(); comparisonState.page+=1; void loadComparison(); return; } if(target.id==='recent-runs-load-more'){ event.preventDefault(); void loadMoreRecentRuns(); return; } if(target.id==='track-refresh'){ event.preventDefault(); void loadTrackPage(); return; } if(target.id==='track-prev'){ event.preventDefault(); if(trackState.page<=1) return; trackState.page-=1; void loadTrackPage(); return; } if(target.id==='track-next'){ event.preventDefault(); trackState.page+=1; void loadTrackPage().then((count)=>{ if(count===0){ trackState.page=Math.max(1,trackState.page-1); } }); } });
     document.addEventListener('change',(event)=>{ const target=event.target; if(target instanceof HTMLSelectElement && target.id==='track-filter'){ trackState.filter=target.value; trackState.page=1; void loadTrackPage(); } });
     document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ void refreshLive(staleMode,currentLanguage,false); } });
     document.addEventListener("submit",(event)=>{ const form=event.target; if(!(form instanceof HTMLFormElement)) return; const confirmMessage=form.dataset.confirmMessage; if(confirmMessage && !window.confirm(confirmMessage)){ event.preventDefault(); return; } const promptText=form.dataset.promptText; if(promptText){ const answer=window.prompt(promptText,""); if(answer===null){ event.preventDefault(); return; } const input=form.querySelector('input[name="confirmationText"]'); if(input instanceof HTMLInputElement) input.value=answer; } const submitter=event.submitter instanceof HTMLButtonElement?event.submitter:form.querySelector('button[type="submit"]'); form.querySelectorAll("button").forEach((button)=>{button.disabled=true}); if(submitter instanceof HTMLButtonElement){ submitter.textContent=submitter.dataset.loadingLabel||"Working..."; } });
@@ -309,6 +416,67 @@ function formatRunStatus(language: Language, status: string) {
 
 function formatTrackStatus(language: Language, status: string) {
   return t(language, `status.track.${status}`);
+}
+
+function formatComparisonStatus(language: Language, status: string) {
+  if (status === "pending") {
+    return t(language, "comparison.status.pending");
+  }
+
+  if (status === "matched_auto") {
+    return t(language, "comparison.status.matched_auto");
+  }
+
+  if (status === "matched_manual") {
+    return t(language, "comparison.status.matched_manual");
+  }
+
+  if (status === "synced") {
+    return t(language, "comparison.status.synced");
+  }
+
+  return t(language, `status.track.${status}`);
+}
+
+function formatComparisonReason(language: Language, reasonCode: string) {
+  return t(language, `comparison.reason.${reasonCode}`);
+}
+
+function formatComparisonExplanation(
+  language: Language,
+  item: DashboardComparison["bucketPage"]["items"][number],
+) {
+  switch (item.reasonCode) {
+    case "review_required":
+      return t(language, "comparison.explanation.review_required");
+    case "no_match":
+      return t(language, "comparison.explanation.no_match");
+    case "failed":
+      return item.lastError
+        ? t(language, "comparison.explanation.failedWithError", { value: previewText(item.lastError, 120) })
+        : t(language, "comparison.explanation.failed");
+    case "waiting_for_youtube_quota":
+      return t(language, "comparison.explanation.waiting_for_youtube_quota");
+    case "waiting_for_spotify_retry":
+      return t(language, "comparison.explanation.waiting_for_spotify_retry");
+    case "needs_reauth":
+      return t(language, "comparison.explanation.needs_reauth");
+    case "mapped_not_in_playlist":
+      return t(language, "comparison.explanation.mapped_not_in_playlist");
+    case "previously_synced_missing_now":
+      return t(language, "comparison.explanation.previously_synced_missing_now");
+    case "source_removed_from_spotify":
+      return t(language, "comparison.explanation.source_removed_from_spotify");
+    case "manual_match_in_playlist":
+      return t(language, "comparison.explanation.manual_match_in_playlist");
+    case "automatic_match_in_playlist":
+      return t(language, "comparison.explanation.automatic_match_in_playlist");
+    case "pending_sync":
+      return t(language, "comparison.explanation.pending_sync");
+    case "unmanaged_or_added_outside_app":
+    default:
+      return t(language, "comparison.explanation.unmanaged_or_added_outside_app");
+  }
 }
 
 function statusClass(status: string) {

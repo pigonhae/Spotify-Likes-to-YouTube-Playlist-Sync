@@ -5,6 +5,7 @@ import { createAppStore, type AppStore } from "./db/store.js";
 import { YouTubeSearchService } from "./providers/search/youtube-search.js";
 import { AccountManagementService } from "./services/account-management-service.js";
 import { OAuthService } from "./services/oauth-service.js";
+import { PlaylistComparisonService } from "./services/playlist-comparison-service.js";
 import { QuotaService } from "./services/quota-service.js";
 import { SyncService } from "./services/sync/sync-service.js";
 import { TrackReviewService } from "./services/track-review-service.js";
@@ -15,6 +16,7 @@ export interface AppContext {
   oauthService: OAuthService;
   quotaService: QuotaService;
   syncService: SyncService;
+  playlistComparisonService: PlaylistComparisonService;
   trackReviewService: TrackReviewService;
   accountManagementService: AccountManagementService;
 }
@@ -48,6 +50,12 @@ export async function createRuntime(): Promise<AppRuntime> {
     quotaService,
     youtubeSearchService,
   );
+  const playlistComparisonService = new PlaylistComparisonService(
+    config,
+    store,
+    oauthService,
+    quotaService,
+  );
   const trackReviewService = new TrackReviewService(
     store,
     oauthService.getYouTubeClient(),
@@ -61,6 +69,7 @@ export async function createRuntime(): Promise<AppRuntime> {
     oauthService,
     quotaService,
     syncService,
+    playlistComparisonService,
     trackReviewService,
     accountManagementService,
     close: async () => {

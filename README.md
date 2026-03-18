@@ -13,6 +13,10 @@ This repository is a single-owner admin app. You log in with HTTP Basic Auth, co
 
 이 저장소는 단일 관리자용 앱입니다. HTTP Basic Auth로 로그인한 뒤 Spotify 계정과 YouTube 계정을 OAuth로 연결하고, 동기화를 실행하고, 저유사도 매칭을 검토하고, quota 또는 재시도 대기 상태가 되면 worker가 중단된 실행을 다시 이어서 처리합니다.
 
+It also includes a playlist comparison panel that compares active Spotify source tracks with the stored YouTube playlist snapshot so you can inspect `Spotify only`, `YouTube only`, and `In both` items instead of relying on one reflected count.
+
+또한 활성 Spotify 소스 트랙과 저장된 YouTube 재생목록 스냅샷을 비교하는 재생목록 비교 패널을 제공하여, 단순한 반영 수치만 보는 대신 `Spotify only`, `YouTube only`, `In both` 항목을 실제 곡 단위로 확인할 수 있습니다.
+
 ## Overview
 
 The current codebase syncs Spotify **liked songs only**. It does not sync arbitrary Spotify playlists. The app is designed around a single persistent owner row in PostgreSQL, a server-rendered Fastify dashboard, and a separate worker process that handles scheduled runs and run resumption.
@@ -64,6 +68,12 @@ The list below reflects features confirmed in the current source code and tests.
 - 대시보드가 polling API를 통해 실시간 진행상황을 표시합니다.
 - 대시보드에서 Spotify 연결 해제, YouTube 연결 해제, 전체 초기화를 수행할 수 있습니다.
 - 대시보드는 영어와 한국어를 모두 지원합니다.
+
+- Compare active Spotify source tracks against the stored YouTube playlist snapshot, with per-item diagnostics for `Spotify only`, `YouTube only`, and `In both`.
+- Refresh the stored YouTube playlist snapshot manually from the dashboard before rerunning the comparison.
+
+- 활성 Spotify 소스 트랙과 저장된 YouTube 재생목록 스냅샷을 비교하여 `Spotify only`, `YouTube only`, `In both` 항목을 곡 단위 진단과 함께 보여줍니다.
+- 대시보드에서 비교를 다시 실행하기 전에 저장된 YouTube 재생목록 스냅샷을 수동으로 새로고칠 수 있습니다.
 
 ## Demo / Screenshots
 
@@ -706,6 +716,10 @@ npm run start:worker
 8. 검토 항목을 해결한 뒤 다시 동기화를 실행합니다.
 9. quota 대기나 재시도 대기가 자동 재개되도록 worker를 계속 실행 상태로 둡니다.
 
+After a run, open the playlist comparison panel to compare the current active Spotify source against the stored YouTube playlist snapshot. If the YouTube side looks stale, click `Refresh YouTube snapshot` and review the `Spotify only`, `YouTube only`, and `In both` tabs before deciding whether you need another sync or a review action.
+
+실행 후에는 재생목록 비교 패널을 열어 현재 활성 Spotify 소스와 저장된 YouTube 재생목록 스냅샷을 비교할 수 있습니다. YouTube 쪽 스냅샷이 오래된 것처럼 보이면 `Refresh YouTube snapshot`을 눌러 새로고친 뒤 `Spotify only`, `YouTube only`, `In both` 탭을 보고 추가 동기화나 검토가 필요한지 판단하면 됩니다.
+
 ## Dashboard / UI Explanation
 
 The dashboard is server-rendered and live-updated by polling.
@@ -779,6 +793,24 @@ The dashboard is server-rendered and live-updated by polling.
   "hasMore": true
 }
 ```
+
+### Playlist comparison panel
+
+- The comparison panel sits between the overview cards and the live sync panel.
+- It compares the current active Spotify source tracks against the stored YouTube playlist snapshot for the managed playlist ID.
+- `Reflected` in the overview is a historical synced-source count, while the comparison panel explains the current source-versus-playlist difference.
+- Comparison data is fetched through `GET /api/playlist-comparison`; it is not part of `/api/dashboard/live` polling.
+- The YouTube side is refreshed only when you click `Refresh YouTube snapshot`, which calls `POST /api/playlist-comparison/refresh`.
+- Only one comparison bucket is rendered at a time, and the lists use explicit next/previous pagination instead of rendering every item at once.
+
+### 재생목록 비교 패널
+
+- 비교 패널은 overview 카드와 live sync 패널 사이에 배치됩니다.
+- 관리 대상 playlist ID에 대해 현재 활성 Spotify 소스 트랙과 저장된 YouTube 재생목록 스냅샷을 비교합니다.
+- overview의 `Reflected`는 과거에 반영된 소스 곡 수이고, 비교 패널은 현재 소스와 현재 저장된 재생목록 스냅샷의 차이를 설명합니다.
+- 비교 데이터는 `GET /api/playlist-comparison`으로 가져오며 `/api/dashboard/live` polling 대상에는 포함되지 않습니다.
+- YouTube 쪽은 `Refresh YouTube snapshot`을 눌렀을 때만 `POST /api/playlist-comparison/refresh`로 새로고침합니다.
+- 한 번에 하나의 비교 버킷만 렌더링하고, 목록은 전체를 한꺼번에 그리지 않고 이전/다음 페이지 버튼으로 나눠 보여줍니다.
 
 ## Manual Sync Explanation
 
@@ -968,6 +1000,22 @@ When a search result score is below `MATCH_THRESHOLD`, the best candidate is sto
 - `TOKEN_ENCRYPTION_KEY`를 바꾸면 기존에 저장된 토큰을 더 이상 복호화할 수 없습니다.
 - 키를 복구하거나, 해당 계정을 다시 연결해야 합니다.
 
+### Reflected count does not match the actual YouTube playlist size
+
+- `Reflected` in the overview is the number of active Spotify source rows that have already been synced or confirmed as already present, not the raw number of videos currently visible in YouTube.
+- The comparison panel uses the current active Spotify source and the stored `playlist_videos` snapshot for the managed playlist ID, so it can explain `Spotify only`, `YouTube only`, and `In both` items one by one.
+- If the YouTube snapshot is old, click `Refresh YouTube snapshot` before trusting the comparison numbers.
+- `YouTube only` usually means the video was added outside the app or the Spotify source was later removed while the YouTube video remained.
+- `Spotify only` usually means the track still needs review, has failed, is waiting on quota/retry, or is mapped locally but not currently present in the playlist snapshot.
+
+### 반영 수치와 실제 YouTube 재생목록 개수가 다르게 보임
+
+- overview의 `Reflected`는 현재 YouTube에 보이는 전체 영상 수가 아니라, 이미 동기화되었거나 기존 존재가 확인된 활성 Spotify 소스 행 수입니다.
+- 비교 패널은 현재 활성 Spotify 소스와 관리 대상 playlist ID의 저장된 `playlist_videos` 스냅샷을 사용하므로 `Spotify only`, `YouTube only`, `In both` 항목을 실제 곡 단위로 설명할 수 있습니다.
+- YouTube 스냅샷이 오래되었다면 비교 숫자를 믿기 전에 `Refresh YouTube snapshot`으로 먼저 새로고침하세요.
+- `YouTube only`는 보통 앱 외부에서 영상이 직접 추가되었거나 Spotify 소스에서 제거된 뒤에도 YouTube 영상이 남아 있는 경우를 의미합니다.
+- `Spotify only`는 보통 검토 대기, 실패, quota/retry 대기, 또는 로컬 매핑은 있지만 현재 재생목록 스냅샷에는 없는 경우를 의미합니다.
+
 ## Known Limitations
 
 - The app syncs Spotify liked songs only, not arbitrary Spotify playlists.
@@ -987,6 +1035,12 @@ When a search result score is below `MATCH_THRESHOLD`, the best candidate is sto
 - UI는 websocket/SSE 대신 polling을 사용합니다.
 - 트랙이 이미 YouTube에 삽입된 뒤에는 수동 검토 결과를 바꿀 수 없습니다.
 - OAuth 설정이 끝나기 전에 worker가 먼저 실행 중이면, 계정 연결 전까지 예약 실행이 실패할 수 있습니다.
+
+- The comparison view depends on the stored YouTube playlist snapshot and is only as current as the last sync or manual snapshot refresh.
+- `In both` is counted from the active Spotify source-track side, while `YouTube only` is counted from playlist videos, so counts are intentionally explained as source-vs-playlist diagnostics rather than a single interchangeable total.
+
+- 비교 화면은 저장된 YouTube 재생목록 스냅샷을 기준으로 하므로, 마지막 동기화나 수동 스냅샷 새로고침 이후 시점까지만 정확합니다.
+- `In both`는 활성 Spotify 소스 트랙 기준으로 계산되고 `YouTube only`는 재생목록 영상 기준으로 계산되므로, 수치는 의도적으로 단일 총합이 아니라 소스 대 재생목록 진단으로 설명됩니다.
 
 ## Security Notes
 

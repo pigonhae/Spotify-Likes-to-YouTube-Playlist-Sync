@@ -32,6 +32,7 @@ import {
 import type { AppDatabase } from "./client.js";
 
 const PLAYLIST_SETTING_KEY = "youtube.playlistId";
+const PLAYLIST_SNAPSHOT_REFRESHED_AT_SETTING_KEY = "youtube.playlistSnapshotRefreshedAt";
 const ACTIVE_SYNC_STATUSES: SyncRunLifecycleStatus[] = [
   "queued",
   "running",
@@ -314,6 +315,21 @@ export class AppStore {
     return (await this.getSetting(PLAYLIST_SETTING_KEY))?.settingValue ?? null;
   }
 
+  async savePlaylistSnapshotRefreshedAt(refreshedAt = Date.now()) {
+    await this.saveSetting(PLAYLIST_SNAPSHOT_REFRESHED_AT_SETTING_KEY, String(refreshedAt));
+    return refreshedAt;
+  }
+
+  async getPlaylistSnapshotRefreshedAt() {
+    const raw = (await this.getSetting(PLAYLIST_SNAPSHOT_REFRESHED_AT_SETTING_KEY))?.settingValue;
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   async disconnectSpotifyState() {
     return this.db.transaction(async (tx: any) => {
       const deletedAccounts = (
@@ -356,7 +372,15 @@ export class AppStore {
       const deletedPlaylistSetting = (
         await tx
           .delete(appSettings)
-          .where(and(eq(appSettings.userId, this.userId), eq(appSettings.key, PLAYLIST_SETTING_KEY)))
+          .where(
+            and(
+              eq(appSettings.userId, this.userId),
+              inArray(appSettings.key, [
+                PLAYLIST_SETTING_KEY,
+                PLAYLIST_SNAPSHOT_REFRESHED_AT_SETTING_KEY,
+              ]),
+            ),
+          )
           .returning({ id: appSettings.id })
       ).length;
       const deletedPlaylistVideos = (
@@ -1418,6 +1442,14 @@ export class AppStore {
       .orderBy(asc(trackMappings.spotifyAddedAt));
   }
 
+  async listRemovedTracks() {
+    return this.db
+      .select()
+      .from(trackMappings)
+      .where(and(eq(trackMappings.userId, this.userId), sql`${trackMappings.spotifyRemovedAt} IS NOT NULL`))
+      .orderBy(desc(trackMappings.spotifyRemovedAt), asc(trackMappings.spotifyAddedAt));
+  }
+
   async listAttentionTracks(limit = 30) {
     return this.db
       .select()
@@ -1699,6 +1731,8 @@ export class AppStore {
           });
       }
     });
+
+    await this.savePlaylistSnapshotRefreshedAt(now);
 
     return {
       storedVideos: normalized.storedVideos.map((video) => ({
