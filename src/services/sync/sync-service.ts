@@ -305,10 +305,25 @@ export class SyncService {
       () => this.oauthService.getYouTubeClient().listPlaylistItems(youtubeToken, playlistId),
     );
     await this.quotaService.charge(Math.max(1, Math.ceil(playlistItems.length / 50)));
-    await this.store.replacePlaylistVideos(playlistId, playlistItems);
+    const snapshotResult = await this.store.replacePlaylistVideos(playlistId, playlistItems);
     stats.playlistItemsSeen = playlistItems.length;
+    if (snapshotResult.duplicateVideoIds.length > 0 || snapshotResult.invalidItems > 0) {
+      await this.store.appendSyncRunEvent({
+        syncRunId: runId,
+        level: "warn",
+        stage: "playlist_snapshot",
+        message: buildPlaylistSnapshotWarningMessage(snapshotResult.duplicateVideoIds.length, snapshotResult.invalidItems),
+        payload: {
+          playlistId,
+          fetchedItems: playlistItems.length,
+          storedItems: snapshotResult.storedVideos.length,
+          duplicateVideoIds: snapshotResult.duplicateVideoIds,
+          invalidItems: snapshotResult.invalidItems,
+        },
+      });
+    }
 
-    const playlistMap = new Map(playlistItems.map((item) => [item.videoId, item]));
+    const playlistMap = new Map(snapshotResult.storedVideos.map((item) => [item.videoId, item]));
     await this.markBaselineExistingTracks(runId, playlistMap, stats);
 
     await this.store.updateSyncRun(runId, {
@@ -399,9 +414,12 @@ export class SyncService {
       const manualVideoId = track.manualVideoId;
       const matchedVideoId = track.matchedVideoId ?? null;
       let targetVideoId = manualVideoId ?? matchedVideoId;
+      let existingPlaylistVideo = targetVideoId
+        ? await this.findExistingPlaylistVideo(playlistId, targetVideoId, playlistMap)
+        : null;
 
-      if (track.status === "inserting" && targetVideoId && playlistMap.has(targetVideoId)) {
-        const existingItemId = playlistMap.get(targetVideoId)?.playlistItemId ?? null;
+      if (track.status === "inserting" && targetVideoId && existingPlaylistVideo) {
+        const existingItemId = existingPlaylistVideo.playlistItemId ?? null;
         await this.store.markTrackInserted(track.spotifyTrackId, existingItemId);
         await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
           status: "inserted",
@@ -409,20 +427,7 @@ export class SyncService {
           playlistItemId: existingItemId,
           lastError: null,
         });
-        stats.skippedAlreadyInPlaylist += 1;
-        continue;
-      }
-
-      if (targetVideoId && playlistMap.has(targetVideoId)) {
-        const existingItemId = playlistMap.get(targetVideoId)?.playlistItemId ?? null;
-        await this.store.markTrackInserted(track.spotifyTrackId, existingItemId);
-        await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
-          status: "skipped_existing",
-          statusMessage: "Video already exists in playlist",
-          playlistItemId: existingItemId,
-          lastError: null,
-        });
-        stats.skippedAlreadyInPlaylist += 1;
+        stats.insertedTracks += 1;
         continue;
       }
 
@@ -516,6 +521,20 @@ export class SyncService {
           continue;
         }
 
+        existingPlaylistVideo = await this.findExistingPlaylistVideo(playlistId, targetVideoId, playlistMap);
+        if (existingPlaylistVideo) {
+          const existingItemId = existingPlaylistVideo.playlistItemId ?? null;
+          await this.store.markTrackInserted(track.spotifyTrackId, existingItemId);
+          await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
+            status: "skipped_existing",
+            statusMessage: "Video already exists in playlist",
+            playlistItemId: existingItemId,
+            lastError: null,
+          });
+          stats.skippedAlreadyInPlaylist += 1;
+          continue;
+        }
+
         if (!(await this.quotaService.hasRoom(50))) {
           throw new QuotaExceededError("Not enough YouTube quota remaining for playlist insertion");
         }
@@ -534,18 +553,27 @@ export class SyncService {
             .insertPlaylistItem(youtubeToken, playlistId, targetVideoId),
         );
         await this.quotaService.charge(50);
-        playlistMap.set(targetVideoId, {
+        const persistedPlaylistVideo = await this.store.savePlaylistVideo(playlistId, {
           playlistItemId,
           videoId: targetVideoId,
           videoTitle: track.matchedVideoTitle,
           channelTitle: track.matchedChannelTitle,
           position: null,
+          sourceSpotifyTrackId: track.spotifyTrackId,
         });
-        await this.store.markTrackInserted(track.spotifyTrackId, playlistItemId);
+        const persistedPlaylistItemId = persistedPlaylistVideo?.playlistItemId ?? playlistItemId;
+        playlistMap.set(targetVideoId, {
+          playlistItemId: persistedPlaylistItemId,
+          videoId: targetVideoId,
+          videoTitle: track.matchedVideoTitle,
+          channelTitle: track.matchedChannelTitle,
+          position: null,
+        });
+        await this.store.markTrackInserted(track.spotifyTrackId, persistedPlaylistItemId);
         await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
           status: "inserted",
           statusMessage: "Inserted into YouTube playlist",
-          playlistItemId,
+          playlistItemId: persistedPlaylistItemId,
           lastError: null,
         });
         stats.insertedTracks += 1;
@@ -556,12 +584,26 @@ export class SyncService {
           throw error;
         }
 
-        const message = error instanceof Error ? error.message : String(error);
+        const message = buildTrackFailureMessage(track.spotifyTrackId, targetVideoId, error);
         await this.store.markTrackSearchFailure(track.spotifyTrackId, "failed", message);
         await this.store.updateSyncRunTrack(runId, track.spotifyTrackId, {
           status: "failed",
           statusMessage: "Track processing failed",
           lastError: message,
+        });
+        await this.store.appendSyncRunEvent({
+          syncRunId: runId,
+          level: "error",
+          stage: "track_failed",
+          message,
+          spotifyTrackId: track.spotifyTrackId,
+          payload: {
+            playlistId,
+            videoId: targetVideoId,
+            duplicate: isUniqueConstraintViolation(error),
+            constraint: getConstraintName(error),
+            code: getErrorCode(error),
+          },
         });
         stats.failedCount += 1;
       } finally {
@@ -721,6 +763,38 @@ export class SyncService {
     return null;
   }
 
+  private async findExistingPlaylistVideo(
+    playlistId: string,
+    videoId: string,
+    playlistMap: Map<string, {
+      playlistItemId: string;
+      videoId: string;
+      videoTitle: string | null;
+      channelTitle: string | null;
+      position: number | null;
+    }>,
+  ) {
+    const snapshotItem = playlistMap.get(videoId);
+    if (snapshotItem) {
+      return snapshotItem;
+    }
+
+    const stored = await this.store.getPlaylistVideoByVideoId(playlistId, videoId);
+    if (!stored) {
+      return null;
+    }
+
+    const normalized = {
+      playlistItemId: stored.playlistItemId,
+      videoId: stored.videoId,
+      videoTitle: stored.videoTitle,
+      channelTitle: stored.channelTitle,
+      position: stored.position,
+    };
+    playlistMap.set(videoId, normalized);
+    return normalized;
+  }
+
   private async buildRunStats(runId: number, fallback: SyncStats) {
     const tracks = await this.store.listAllSyncRunTracks(runId);
     const next = {
@@ -865,4 +939,66 @@ function getReasonCode(error: unknown) {
   }
 
   return undefined;
+}
+
+function buildPlaylistSnapshotWarningMessage(duplicateCount: number, invalidItems: number) {
+  const parts: string[] = [];
+  if (duplicateCount > 0) {
+    parts.push(`deduplicated ${duplicateCount} duplicate video IDs before writing playlist_videos`);
+  }
+  if (invalidItems > 0) {
+    parts.push(`skipped ${invalidItems} invalid playlist rows`);
+  }
+
+  return `Playlist snapshot ${parts.join(" and ")}`;
+}
+
+function buildTrackFailureMessage(
+  spotifyTrackId: string,
+  videoId: string | null,
+  error: unknown,
+) {
+  const baseMessage = error instanceof Error ? error.message : String(error);
+  const parts = [`track ${spotifyTrackId} failed`];
+  if (videoId) {
+    parts.push(`video_id=${videoId}`);
+  }
+
+  const constraint = getConstraintName(error);
+  if (constraint) {
+    parts.push(`constraint=${constraint}`);
+  }
+
+  const code = getErrorCode(error);
+  if (code) {
+    parts.push(`code=${code}`);
+  }
+
+  if (isUniqueConstraintViolation(error)) {
+    parts.push("duplicate=true");
+  }
+
+  return `${parts.join(" ")}: ${baseMessage}`;
+}
+
+function getConstraintName(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidate = (error as { constraint?: unknown }).constraint;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function getErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidate = (error as { code?: unknown }).code;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function isUniqueConstraintViolation(error: unknown) {
+  return getErrorCode(error) === "23505";
 }

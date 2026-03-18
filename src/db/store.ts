@@ -56,6 +56,31 @@ interface ManualSelectionMetadata {
   manualResolutionType?: ManualResolutionType | null;
 }
 
+interface PlaylistVideoInput {
+  playlistItemId: string;
+  videoId: string;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  position: number | null;
+  sourceSpotifyTrackId?: string | null;
+}
+
+interface ReplacePlaylistVideosResult {
+  storedVideos: PlaylistVideoInput[];
+  duplicateVideoIds: string[];
+  invalidItems: number;
+}
+
+interface NormalizedPlaylistVideo {
+  playlistId: string;
+  playlistItemId: string;
+  videoId: string;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  position: number | null;
+  sourceSpotifyTrackId: string | null;
+}
+
 interface SyncRunTrackUpsertInput {
   syncRunId: number;
   track: SpotifyTrack;
@@ -1528,6 +1553,57 @@ export class AppStore {
       );
   }
 
+  async getPlaylistVideoByVideoId(playlistId: string, videoId: string) {
+    return (
+      (
+        await this.db
+          .select()
+          .from(playlistVideos)
+          .where(
+            and(
+              eq(playlistVideos.userId, this.userId),
+              eq(playlistVideos.playlistId, playlistId),
+              eq(playlistVideos.videoId, videoId),
+            ),
+          )
+          .limit(1)
+      )[0] ?? null
+    );
+  }
+
+  async savePlaylistVideo(
+    playlistId: string,
+    video: PlaylistVideoInput,
+  ) {
+    const normalized = normalizePlaylistVideo(playlistId, video);
+    if (!normalized) {
+      throw new Error(
+        `Cannot persist playlist video without playlistId, playlistItemId, and videoId (playlistId=${playlistId}, playlistItemId=${String(video.playlistItemId)}, videoId=${String(video.videoId)})`,
+      );
+    }
+
+    const now = Date.now();
+    await this.db
+      .insert(playlistVideos)
+      .values({
+        id: randomUUID(),
+        userId: this.userId,
+        playlistId: normalized.playlistId,
+        playlistItemId: normalized.playlistItemId,
+        videoId: normalized.videoId,
+        videoTitle: normalized.videoTitle,
+        channelTitle: normalized.channelTitle,
+        sourceSpotifyTrackId: normalized.sourceSpotifyTrackId ?? null,
+        position: normalized.position,
+        syncedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [playlistVideos.userId, playlistVideos.playlistId, playlistVideos.videoId],
+      });
+
+    return this.getPlaylistVideoByVideoId(normalized.playlistId, normalized.videoId);
+  }
+
   async resetTrackForRetry(spotifyTrackId: string, message: string) {
     await this.db
       .update(trackMappings)
@@ -1553,28 +1629,48 @@ export class AppStore {
       channelTitle: string | null;
       position: number | null;
     }>,
-  ) {
+  ): Promise<ReplacePlaylistVideosResult> {
     const now = Date.now();
+    const normalized = normalizePlaylistVideoSnapshot(playlistId, videos);
+
     await this.db.transaction(async (tx: any) => {
       await tx
         .delete(playlistVideos)
         .where(and(eq(playlistVideos.userId, this.userId), eq(playlistVideos.playlistId, playlistId)));
 
-      for (const video of videos) {
-        await tx.insert(playlistVideos).values({
-          id: randomUUID(),
-          userId: this.userId,
-          playlistId,
-          playlistItemId: video.playlistItemId,
-          videoId: video.videoId,
-          videoTitle: video.videoTitle,
-          channelTitle: video.channelTitle,
-          sourceSpotifyTrackId: null,
-          position: video.position,
-          syncedAt: now,
-        });
+      for (const video of normalized.storedVideos) {
+        await tx
+          .insert(playlistVideos)
+          .values({
+            id: randomUUID(),
+            userId: this.userId,
+            playlistId: video.playlistId,
+            playlistItemId: video.playlistItemId,
+            videoId: video.videoId,
+            videoTitle: video.videoTitle,
+            channelTitle: video.channelTitle,
+            sourceSpotifyTrackId: video.sourceSpotifyTrackId ?? null,
+            position: video.position,
+            syncedAt: now,
+          })
+          .onConflictDoNothing({
+            target: [playlistVideos.userId, playlistVideos.playlistId, playlistVideos.videoId],
+          });
       }
     });
+
+    return {
+      storedVideos: normalized.storedVideos.map((video) => ({
+        playlistItemId: video.playlistItemId,
+        videoId: video.videoId,
+        videoTitle: video.videoTitle,
+        channelTitle: video.channelTitle,
+        position: video.position,
+        sourceSpotifyTrackId: video.sourceSpotifyTrackId ?? null,
+      })),
+      duplicateVideoIds: normalized.duplicateVideoIds,
+      invalidItems: normalized.invalidItems,
+    };
   }
 
   async listPlaylistVideos(playlistId: string) {
@@ -1776,4 +1872,110 @@ function buildRunTrackFilter(filter: SyncRunTrackStatus | "active" | "all") {
   }
 
   return eq(syncRunTracks.status, filter);
+}
+
+function normalizePlaylistVideo(
+  playlistId: string,
+  video: PlaylistVideoInput,
+): NormalizedPlaylistVideo | null {
+  const normalizedPlaylistId = normalizeNonEmptyString(playlistId);
+  const playlistItemId = normalizeNonEmptyString(video.playlistItemId);
+  const videoId = normalizeNonEmptyString(video.videoId);
+
+  if (!normalizedPlaylistId || !playlistItemId || !videoId) {
+    return null;
+  }
+
+  return {
+    playlistId: normalizedPlaylistId,
+    playlistItemId,
+    videoId,
+    videoTitle: normalizeNullableString(video.videoTitle),
+    channelTitle: normalizeNullableString(video.channelTitle),
+    position: typeof video.position === "number" ? video.position : null,
+    sourceSpotifyTrackId: normalizeNullableString(video.sourceSpotifyTrackId ?? null),
+  };
+}
+
+function normalizePlaylistVideoSnapshot(
+  playlistId: string,
+  videos: PlaylistVideoInput[],
+) {
+  const uniqueByVideoId = new Map<string, NormalizedPlaylistVideo>();
+  const duplicateVideoIds = new Set<string>();
+  let invalidItems = 0;
+
+  for (const video of videos) {
+    const normalized = normalizePlaylistVideo(playlistId, video);
+    if (!normalized) {
+      invalidItems += 1;
+      continue;
+    }
+
+    const existing = uniqueByVideoId.get(normalized.videoId);
+    if (!existing) {
+      uniqueByVideoId.set(normalized.videoId, normalized);
+      continue;
+    }
+
+    duplicateVideoIds.add(normalized.videoId);
+    if (shouldReplacePlaylistVideo(existing, normalized)) {
+      uniqueByVideoId.set(normalized.videoId, normalized);
+    }
+  }
+
+  return {
+    storedVideos: Array.from(uniqueByVideoId.values()).sort(comparePlaylistVideoOrder),
+    duplicateVideoIds: Array.from(duplicateVideoIds.values()).sort(),
+    invalidItems,
+  };
+}
+
+function shouldReplacePlaylistVideo(
+  current: NormalizedPlaylistVideo,
+  candidate: NormalizedPlaylistVideo,
+) {
+  if (current.position === null) {
+    return candidate.position !== null;
+  }
+
+  if (candidate.position === null) {
+    return false;
+  }
+
+  if (candidate.position !== current.position) {
+    return candidate.position < current.position;
+  }
+
+  return candidate.playlistItemId < current.playlistItemId;
+}
+
+function comparePlaylistVideoOrder(
+  left: NormalizedPlaylistVideo,
+  right: NormalizedPlaylistVideo,
+) {
+  const leftPosition = left.position ?? Number.MAX_SAFE_INTEGER;
+  const rightPosition = right.position ?? Number.MAX_SAFE_INTEGER;
+  if (leftPosition !== rightPosition) {
+    return leftPosition - rightPosition;
+  }
+
+  return left.playlistItemId.localeCompare(right.playlistItemId);
+}
+
+function normalizeNonEmptyString(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeNullableString(value: string | null | undefined) {
+  if (value == null) {
+    return null;
+  }
+
+  return normalizeNonEmptyString(value);
 }

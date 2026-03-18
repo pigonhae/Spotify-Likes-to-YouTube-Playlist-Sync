@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 
-import { syncRuns } from "../src/db/schema.js";
+import { playlistVideos, syncRuns } from "../src/db/schema.js";
 import { QuotaService } from "../src/services/quota-service.js";
 import { SyncService } from "../src/services/sync/sync-service.js";
 import { createTestConfig, createTestStore } from "./helpers/test-support.js";
@@ -80,6 +80,94 @@ describe("SyncService", () => {
     expect(result.stats.insertedTracks).toBe(0);
     expect(result.stats.skippedAlreadyInPlaylist).toBe(1);
     expect(insertPlaylistItem).not.toHaveBeenCalled();
+
+    await close();
+  });
+
+  it("deduplicates duplicate playlist snapshot rows before writing playlist_videos", async () => {
+    const { store, close } = await createTestStore();
+
+    await store.saveSpotifySnapshot([
+      {
+        spotifyTrackId: "spotify-track-dup",
+        name: "Duplicate Track",
+        artistNames: ["Artist Dup"],
+        albumName: "Album Dup",
+        albumReleaseDate: "2024-01-01",
+        durationMs: 180_000,
+        isrc: null,
+        addedAt: Date.parse("2026-03-17T00:00:00.000Z"),
+        externalUrl: "https://open.spotify.com/track/spotify-track-dup",
+      },
+    ]);
+    await store.setManualVideoId("spotify-track-dup", "duplicate-video-123");
+
+    const config = createTestConfig({
+      YOUTUBE_DAILY_QUOTA_LIMIT: 10_000,
+      YOUTUBE_PLAYLIST_ID: "playlist-123",
+    });
+
+    const insertPlaylistItem = vi.fn();
+    const oauthService = {
+      getValidAccessToken: vi.fn(async (provider: string) => `${provider}-token`),
+      getSpotifyClient: () => ({
+        getAllSavedTracks: vi.fn(async () => [
+          {
+            spotifyTrackId: "spotify-track-dup",
+            name: "Duplicate Track",
+            artistNames: ["Artist Dup"],
+            albumName: "Album Dup",
+            albumReleaseDate: "2024-01-01",
+            durationMs: 180_000,
+            isrc: null,
+            addedAt: Date.parse("2026-03-17T00:00:00.000Z"),
+            externalUrl: "https://open.spotify.com/track/spotify-track-dup",
+          },
+        ]),
+      }),
+      getYouTubeClient: () => ({
+        listPlaylistItems: vi.fn(async () => [
+          {
+            playlistItemId: "item-1",
+            videoId: "duplicate-video-123",
+            videoTitle: "Duplicate Track",
+            channelTitle: "Artist Dup - Topic",
+            position: 0,
+          },
+          {
+            playlistItemId: "item-2",
+            videoId: "duplicate-video-123",
+            videoTitle: "Duplicate Track",
+            channelTitle: "Artist Dup - Topic",
+            position: 3,
+          },
+        ]),
+        insertPlaylistItem,
+        createPlaylist: vi.fn(),
+      }),
+    };
+
+    const syncService = new SyncService(
+      config,
+      store,
+      oauthService as never,
+      new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT),
+      {
+        findBestMatch: vi.fn(),
+      } as never,
+    );
+
+    const result = await syncService.run("test");
+    const snapshotRows = await store.db.select().from(playlistVideos);
+    const events = await store.listSyncRunEvents(result.runId, 20);
+
+    expect(result.status).toBe("completed");
+    expect(result.stats.insertedTracks).toBe(0);
+    expect(result.stats.skippedAlreadyInPlaylist).toBe(1);
+    expect(insertPlaylistItem).not.toHaveBeenCalled();
+    expect(snapshotRows).toHaveLength(1);
+    expect(snapshotRows[0]?.videoId).toBe("duplicate-video-123");
+    expect(events.some((event: any) => event.stage === "playlist_snapshot" && event.level === "warn")).toBe(true);
 
     await close();
   });
@@ -261,6 +349,87 @@ describe("SyncService", () => {
     expect(track?.searchStatus).toBe("review_required");
     expect(track?.reviewVideoId).toBe("review12345A");
     expect(track?.matchedVideoId).toBeNull();
+
+    await close();
+  });
+
+  it("marks only the failing track as failed when playlist_videos persistence fails and continues the run", async () => {
+    const { store, close } = await createTestStore();
+    const config = createTestConfig({
+      YOUTUBE_DAILY_QUOTA_LIMIT: 10_000,
+      YOUTUBE_PLAYLIST_ID: "playlist-123",
+    });
+
+    const spotifyTracks = [
+      createSpotifyTrack("spotify-track-fail", "Fail Track", Date.parse("2026-03-17T00:00:00.000Z")),
+      createSpotifyTrack("spotify-track-ok", "Okay Track", Date.parse("2026-03-17T00:01:00.000Z")),
+    ];
+
+    const oauthService = {
+      getValidAccessToken: vi.fn(async (provider: string) => `${provider}-token`),
+      getSpotifyClient: () => ({
+        getAllSavedTracks: vi.fn(async () => spotifyTracks),
+      }),
+      getYouTubeClient: () => ({
+        listPlaylistItems: vi.fn(async () => []),
+        insertPlaylistItem: vi.fn(async (_token: string, _playlistId: string, videoId: string) => `item-${videoId}`),
+        createPlaylist: vi.fn(),
+      }),
+    };
+    const youtubeSearchService = {
+      findBestMatch: vi.fn(async ({ spotifyTrackId }: { spotifyTrackId: string }) => ({
+        disposition: "matched_auto" as const,
+        best: {
+          score: 99,
+          reasons: [],
+          candidate: {
+            videoId: `video-for-${spotifyTrackId}`,
+            title: `Video for ${spotifyTrackId}`,
+            channelTitle: "Matched Channel",
+            source: "youtube_api" as const,
+            url: `https://www.youtube.com/watch?v=video-for-${spotifyTrackId}`,
+          },
+        },
+      })),
+    };
+
+    const originalSavePlaylistVideo = store.savePlaylistVideo.bind(store);
+    vi.spyOn(store, "savePlaylistVideo").mockImplementation(async (playlistId, video) => {
+      if (video.videoId === "video-for-spotify-track-fail") {
+        const error = new Error("duplicate key value violates unique constraint");
+        Object.assign(error, {
+          code: "23505",
+          constraint: "playlist_videos_user_playlist_video_uidx",
+        });
+        throw error;
+      }
+
+      return originalSavePlaylistVideo(playlistId, video);
+    });
+
+    const syncService = new SyncService(
+      config,
+      store,
+      oauthService as never,
+      new QuotaService(store, config.YOUTUBE_DAILY_QUOTA_LIMIT),
+      youtubeSearchService as never,
+    );
+
+    const result = await syncService.run("manual");
+    const runTracks = await store.listSyncRunTracks(result.runId, { page: 1, pageSize: 10 });
+    const failedTrack = runTracks.find((track: any) => track.spotifyTrackId === "spotify-track-fail");
+    const insertedTrack = runTracks.find((track: any) => track.spotifyTrackId === "spotify-track-ok");
+    const events = await store.listSyncRunEvents(result.runId, 20);
+
+    expect(result.status).toBe("partially_completed");
+    expect(result.stats.failedCount).toBe(1);
+    expect(result.stats.insertedTracks).toBe(1);
+    expect(failedTrack?.status).toBe("failed");
+    expect(failedTrack?.lastError).toContain("video_id=video-for-spotify-track-fail");
+    expect(failedTrack?.lastError).toContain("constraint=playlist_videos_user_playlist_video_uidx");
+    expect(failedTrack?.lastError).toContain("duplicate=true");
+    expect(insertedTrack?.status).toBe("inserted");
+    expect(events.some((event: any) => event.stage === "track_failed" && event.spotifyTrackId === "spotify-track-fail")).toBe(true);
 
     await close();
   });

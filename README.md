@@ -33,7 +33,9 @@ The list below reflects features confirmed in the current source code and tests.
 - Search YouTube candidates, score them, auto-accept high-confidence matches, and send low-confidence matches to a review queue.
 - Accept a recommended match or enter a manual YouTube URL/video ID before insertion.
 - Validate manual YouTube selections before saving them.
-- Insert videos into one managed YouTube playlist and skip duplicates already present in that playlist.
+- Snapshot the current YouTube playlist into `playlist_videos`, deduplicate duplicate `video_id` entries safely, and treat already-present videos as existing by `(user_id, playlist_id, video_id)`.
+- Insert videos into one managed YouTube playlist with duplicate-safe local persistence, skipping videos that are already present instead of retrying the same insert.
+- If one track fails during playlist insertion or local playlist-state persistence, mark only that track as failed and continue the rest of the run.
 - Auto-create the managed YouTube playlist if `YOUTUBE_PLAYLIST_ID` is not configured.
 - Persist sync runs, per-track run status, run events, run progress, retry timestamps, and quota state.
 - Pause runs for YouTube quota exhaustion, Spotify retryable failures, or OAuth reauthentication needs.
@@ -51,7 +53,9 @@ The list below reflects features confirmed in the current source code and tests.
 - YouTube 후보를 검색하고 점수를 계산하여, 고신뢰 후보는 자동 확정하고 저신뢰 후보는 검토 큐로 보냅니다.
 - 추천 후보를 승인하거나, 삽입 전에 YouTube URL/영상 ID를 수동 입력할 수 있습니다.
 - 수동으로 입력한 YouTube 영상은 저장 전에 유효성 검사를 수행합니다.
-- 하나의 관리형 YouTube 재생목록에 영상을 삽입하고, 이미 있는 영상은 중복 삽입하지 않습니다.
+- 현재 YouTube 재생목록을 `playlist_videos`에 스냅샷으로 저장할 때, 중복 `video_id` 항목은 안전하게 정리하고 `(user_id, playlist_id, video_id)` 기준으로 이미 존재하는 영상으로 취급합니다.
+- 하나의 관리형 YouTube 재생목록에 영상을 추가할 때 로컬 상태 저장도 중복 충돌 없이 처리하며, 이미 존재하는 영상은 같은 insert를 반복하지 않고 건너뜁니다.
+- 재생목록 삽입 또는 로컬 재생목록 상태 저장 중 특정 트랙 하나가 실패해도 그 트랙만 failed로 기록하고 나머지 run은 계속 진행합니다.
 - `YOUTUBE_PLAYLIST_ID`가 없으면 관리형 YouTube 재생목록을 자동 생성할 수 있습니다.
 - 동기화 실행, 실행별 트랙 상태, 이벤트 로그, 진행률, 재시도 시각, quota 상태를 모두 영구 저장합니다.
 - YouTube quota 소진, Spotify 재시도 가능 오류, OAuth 재인증 필요 시 실행을 일시 중지합니다.
@@ -122,22 +126,24 @@ Add dashboard screenshots or a short demo GIF here.
 1. The web app creates one persistent owner user row using `OWNER_USER_KEY`.
 2. You authenticate to the dashboard with `APP_BASIC_AUTH_USER` / `APP_BASIC_AUTH_PASS`.
 3. You connect Spotify and YouTube through OAuth.
-4. A sync run scans Spotify liked songs and snapshots the current YouTube playlist.
+4. A sync run scans Spotify liked songs and snapshots the current YouTube playlist, deduplicating duplicate `video_id` entries before saving local playlist state.
 5. Existing manual mappings and cached matches are reused when possible.
 6. New tracks are matched to YouTube candidates.
-7. High-confidence matches are inserted automatically.
+7. High-confidence matches are inserted automatically only when the target video is not already present in the playlist snapshot.
 8. Low-confidence matches are marked `review_required`.
-9. Quota waits and retry waits are persisted, then resumed by the worker later.
+9. Track-level playlist insertion or playlist-state persistence failures are recorded on that track as `failed`, while the rest of the run continues.
+10. Quota waits and retry waits are persisted, then resumed by the worker later.
 
 1. 웹 앱은 `OWNER_USER_KEY`를 사용해 하나의 영구 owner 사용자 row를 만듭니다.
 2. `APP_BASIC_AUTH_USER` / `APP_BASIC_AUTH_PASS`로 대시보드에 로그인합니다.
 3. Spotify와 YouTube를 OAuth로 연결합니다.
-4. 동기화 실행은 Spotify 좋아요 곡을 스캔하고 현재 YouTube 재생목록 상태를 스냅샷으로 읽습니다.
+4. 동기화 실행은 Spotify 좋아요 곡을 스캔하고, 현재 YouTube 재생목록을 로컬 상태로 저장하기 전에 중복 `video_id` 항목을 정리한 뒤 스냅샷으로 읽습니다.
 5. 기존 수동 매핑과 캐시된 매칭 결과가 있으면 재사용합니다.
 6. 새 트랙은 YouTube 후보와 매칭됩니다.
-7. 신뢰도가 높은 매칭은 자동으로 삽입됩니다.
+7. 신뢰도가 높은 매칭도 대상 영상이 재생목록 스냅샷에 아직 없을 때만 자동으로 삽입됩니다.
 8. 신뢰도가 낮은 매칭은 `review_required` 상태가 됩니다.
-9. quota 대기와 재시도 대기는 DB에 저장되고, 이후 worker가 다시 이어서 실행합니다.
+9. 재생목록 삽입이나 로컬 재생목록 상태 저장이 트랙 단위로 실패하면 그 트랙만 `failed`로 기록하고, 나머지 run은 계속 진행합니다.
+10. quota 대기와 재시도 대기는 DB에 저장되고, 이후 worker가 다시 이어서 실행합니다.
 
 ## Sync Flow
 
@@ -146,26 +152,28 @@ Add dashboard screenshots or a short demo GIF here.
 3. Read Spotify liked songs in pages of up to `SPOTIFY_PAGE_SIZE` and persist them.
 4. Mark Spotify tracks that disappeared from the library as removed in local state.
 5. Resolve the target YouTube playlist ID.
-6. Load the current YouTube playlist snapshot and mark already-present videos as `skipped_existing`.
+6. Load the current YouTube playlist snapshot, collapse duplicate playlist entries by `video_id` for local state, and mark already-present videos as `skipped_existing`.
 7. For each remaining track, process in oldest-liked-first order.
 8. Use an existing manual match if present.
 9. Otherwise reuse a cached automatic match if present.
 10. Otherwise search YouTube, validate top candidates, and classify the result as auto-match, review-required, or no-match.
-11. Insert matched videos into the playlist.
-12. Persist final stats and release the lock.
+11. Before each playlist insertion, check the current snapshot/DB state for the target `video_id`; only insert when it is not already present, then persist local playlist state with conflict-safe writes.
+12. If one track fails during playlist insertion or playlist-state persistence, mark only that track as `failed`, log the track/video/constraint details, and continue with the remaining tracks.
+13. Persist final stats and release the lock.
 
 1. `hourly-sync` lock을 획득합니다.
 2. 재개 가능한 paused/stale run이 있으면 먼저 이어서 실행하고, 없으면 새 run을 만듭니다.
 3. `SPOTIFY_PAGE_SIZE` 크기만큼 Spotify 좋아요 곡을 페이지 단위로 읽어 저장합니다.
 4. Spotify 라이브러리에서 사라진 트랙은 로컬 상태에서 removed로 표시합니다.
 5. 대상 YouTube 재생목록 ID를 결정합니다.
-6. 현재 YouTube 재생목록 스냅샷을 읽고 이미 들어 있는 영상은 `skipped_existing`로 표시합니다.
+6. 현재 YouTube 재생목록 스냅샷을 읽고, 로컬 상태에서는 중복 playlist entry를 `video_id` 기준으로 정리한 뒤 이미 들어 있는 영상은 `skipped_existing`로 표시합니다.
 7. 남은 트랙은 가장 오래 전에 좋아요한 곡부터 처리합니다.
 8. 수동 매핑이 있으면 우선 사용합니다.
 9. 없으면 기존 자동 매칭 결과를 재사용합니다.
 10. 그래도 없으면 YouTube를 검색하고 상위 후보를 검증한 뒤 자동 매칭, 검토 필요, 미매칭으로 분류합니다.
-11. 매칭된 영상을 재생목록에 삽입합니다.
-12. 최종 통계를 저장하고 lock을 해제합니다.
+11. 각 재생목록 삽입 전에 현재 스냅샷/DB 상태에서 대상 `video_id`가 이미 있는지 확인하고, 없을 때만 삽입한 뒤 충돌 안전 방식으로 로컬 재생목록 상태를 저장합니다.
+12. 재생목록 삽입 또는 재생목록 상태 저장이 특정 트랙에서 실패하면 그 트랙만 `failed`로 기록하고, 트랙/영상/constraint 정보를 로그에 남긴 뒤 나머지 트랙을 계속 처리합니다.
+13. 최종 통계를 저장하고 lock을 해제합니다.
 
 ## YouTube Quota / Retry / Resume Behavior
 
@@ -823,6 +831,12 @@ When a search result score is below `MATCH_THRESHOLD`, the best candidate is sto
 - Renaming the playlist or changing privacy is normally fine.
 - If the connected YouTube account no longer owns or can access that playlist ID, sync will fail until access is restored or YouTube is reconnected.
 
+### Repeated `insert into playlist_videos` errors
+
+- The sync service now deduplicates playlist snapshot rows by `video_id` before writing `playlist_videos`.
+- Existing videos are skipped before playlist insertion, and local playlist-state writes use conflict-safe inserts.
+- If this error still appears, check the sync run events or worker logs for the reported `video_id`, duplicate flag, and constraint name.
+
 ### Sync pauses on YouTube quota
 
 - Check `YOUTUBE_DAILY_QUOTA_LIMIT`.
@@ -881,6 +895,12 @@ When a search result score is below `MATCH_THRESHOLD`, the best candidate is sto
 - 이 서비스는 재생목록 제목이 아니라 재생목록 ID를 기준으로 동작합니다.
 - 재생목록 이름 변경이나 공개 범위 변경은 보통 문제가 되지 않습니다.
 - 하지만 연결된 YouTube 계정이 그 재생목록 ID에 더 이상 접근하지 못하면, 접근 권한을 복구하거나 YouTube를 다시 연결할 때까지 동기화가 실패합니다.
+
+### `insert into playlist_videos` 오류가 반복됨
+
+- 이제 sync 서비스는 `playlist_videos`에 쓰기 전에 playlist snapshot row를 `video_id` 기준으로 dedupe합니다.
+- 이미 재생목록에 있는 영상은 insert 전에 skip하며, 로컬 재생목록 상태 저장은 conflict-safe insert를 사용합니다.
+- 같은 오류가 계속 보이면 sync run 이벤트 또는 worker 로그에서 함께 기록된 `video_id`, duplicate 여부, constraint 이름을 확인합니다.
 
 ### YouTube quota로 동기화가 멈춤
 
